@@ -51,9 +51,9 @@ go run ./cmd/go-stock-cli kline show --stock-code 002335 --k-line-type day --lim
 
 ```powershell
 go run ./cmd/go-stock-cli tool list
-go run ./cmd/go-stock-cli tool info --name GetStockOrderBook
-go run ./cmd/go-stock-cli tool GetStockOrderBook --stock-code 600237
-go run ./cmd/go-stock-cli tool GetStockLatestFinance --stock-code sz002335,sz002506,sh603690
+go run ./cmd/go-stock-cli tool info --name GetStockInfo
+go run ./cmd/go-stock-cli tool GetStockInfo --stock-code 600237
+go run ./cmd/go-stock-cli tool GetStockLatestFinance --stockCode='sz002335,sz002506,sh603690'
 ```
 
 CLI 也支持 kebab 写法：
@@ -66,6 +66,14 @@ go run ./cmd/go-stock-cli tool get-stock-order-book --stock-code 600237
 
 F10/概念等单股语义工具遇到多只股票时会自动逐只查询并分段输出，避免底层接口把多代码合并成不可读结果。
 
+### raw tool 参数和盯盘注意事项
+
+- `--stockCode`、`--stock-code`、`--stock_code`、`--stockcode` 都会归一为 `stockCode`。如果股票参数缺失，`GetStockInfo` / `GetStockOrderBook` 会直接报参数错误，不再伪装成“行情源无数据”。
+- PowerShell 多股票参数建议加引号，例如 `--stockCode='sh600237,sz002335'`；更稳妥时可用 `--args-json '{"stockCode":"sh600237,sz002335"}'`。
+- 盯盘优先用 `tool GetStockInfo`，它包含行情和五档盘口概览；`GetStockOrderBook` 是专用盘口工具，返回空盘口时 CLI 会自动尝试用 `GetStockInfo` 兜底。
+- `GetStockLatestFinance` 等单股语义工具遇到多股票输入时，CLI 会逐只拆分调用并分段输出。
+- 15:00 收盘后盘口仍可能返回最近快照，只能按收盘附近快照理解，不代表仍可成交。
+
 ## 写入边界
 
 长期 CLI 主入口只允许一个受控写入路径：
@@ -75,6 +83,8 @@ go run ./cmd/go-stock-cli portfolio position set --stock-code 600237 --cost-pric
 ```
 
 持仓、成本、数量、止损、止盈、涨跌提醒、股价提醒必须走预览/确认令牌流程。原写入/通知/配置工具不会作为 raw `tool <name>` 入口开放。
+
+`portfolio list` 是 go-stock 本地自选/持仓元数据，不会自动同步真实券商交易。如果用户实际买入或卖出，需要通过 `portfolio position set` 预览并二次确认后更新本地成本、数量和提醒字段。确认时使用 `--confirm` 作为 flag，也兼容 `--confirm true`，但推荐只写 `--confirm`。
 
 分组管理命令用于对齐 GUI 的自选分组能力：
 

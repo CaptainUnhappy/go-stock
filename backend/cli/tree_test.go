@@ -177,6 +177,20 @@ func (f *fakeInvokableTool) Info(context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{Name: "GetStockLatestFinance"}, nil
 }
 
+type staticInvokableTool struct {
+	output string
+	calls  []string
+}
+
+func (f *staticInvokableTool) Info(context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{Name: "Static"}, nil
+}
+
+func (f *staticInvokableTool) InvokableRun(_ context.Context, args string, _ ...einotool.Option) (string, error) {
+	f.calls = append(f.calls, args)
+	return f.output, nil
+}
+
 func (f *fakeInvokableTool) InvokableRun(_ context.Context, args string, _ ...einotool.Option) (string, error) {
 	f.calls = append(f.calls, args)
 	var parsed map[string]any
@@ -206,6 +220,50 @@ func TestToolRunnerSplitsSingleStockArchiveToolCalls(t *testing.T) {
 	}
 	if len(fake.calls) != 3 {
 		t.Fatalf("fake tool calls = %d, want 3", len(fake.calls))
+	}
+}
+
+func TestRawToolRequiresStockCodeBeforeInvoke(t *testing.T) {
+	fake := &staticInvokableTool{output: "should not run"}
+	r := &toolRunner{
+		tools: map[string]einotool.InvokableTool{
+			"GetStockInfo": fake,
+		},
+	}
+	_, err := r.call("GetStockInfo", nil)(context.Background(), map[string]any{
+		"stock-code-wrong": "sh600237",
+	})
+	if err == nil {
+		t.Fatal("expected missing stockCode error")
+	}
+	if !strings.Contains(err.Error(), "requires stockCode") {
+		t.Fatalf("error = %v, want stockCode guidance", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("tool was invoked %d times, want 0", len(fake.calls))
+	}
+}
+
+func TestOrderBookFallsBackToStockInfo(t *testing.T) {
+	orderBook := &staticInvokableTool{output: "未找到盘口数据"}
+	stockInfo := &staticInvokableTool{output: "买一: 12.58\n卖一: 12.59"}
+	r := &toolRunner{
+		tools: map[string]einotool.InvokableTool{
+			"GetStockOrderBook": orderBook,
+			"GetStockInfo":      stockInfo,
+		},
+	}
+	out, err := r.call("GetStockOrderBook", nil)(context.Background(), map[string]any{
+		"stock-code": "sh600237",
+	})
+	if err != nil {
+		t.Fatalf("order book call failed: %v", err)
+	}
+	if !strings.Contains(out, "盘口兜底") || !strings.Contains(out, "买一") {
+		t.Fatalf("fallback output missing expected content: %s", out)
+	}
+	if len(orderBook.calls) != 1 || len(stockInfo.calls) != 1 {
+		t.Fatalf("calls = orderBook:%d stockInfo:%d, want 1/1", len(orderBook.calls), len(stockInfo.calls))
 	}
 }
 

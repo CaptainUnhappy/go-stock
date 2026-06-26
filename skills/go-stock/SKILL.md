@@ -13,7 +13,7 @@ description: Use when an agent needs to work with local go-stock financial data 
 2. `.\scripts\go-stock-cli.ps1 <commandPath> ...`：调用具体功能。
 3. GUI 主树没有覆盖但归档工具层有的能力，用 `tool list`、`tool info`、`tool <原工具名>`。
 
-旧的原始对外 MCP 工具已经迁移到 CLI 归档工具层：先用 `tool list` 查看清单，用 `tool info --name 工具名` 查看参数，再用 `tool 工具名` 调用。例如 `tool GetStockOrderBook`。项目本地对外 MCP 服务已归档，不再作为新集成目标。
+旧的原始对外 MCP 工具已经迁移到 CLI 归档工具层：先用 `tool list` 查看清单，用 `tool info --name 工具名` 查看参数，再用 `tool 工具名` 调用。例如 `tool GetStockInfo`。项目本地对外 MCP 服务已归档，不再作为新集成目标。
 
 ## 快速使用
 
@@ -32,8 +32,8 @@ description: Use when an agent needs to work with local go-stock financial data 
 .\scripts\go-stock-cli.ps1 portfolio position set --stock-code 600237 --cost-price 12.56 --volume 300
 .\scripts\go-stock-cli.ps1 fund ranking --page-size 20
 .\scripts\go-stock-cli.ps1 tool list
-.\scripts\go-stock-cli.ps1 tool info --name GetStockOrderBook
-.\scripts\go-stock-cli.ps1 tool GetStockOrderBook --stock-code 600237
+.\scripts\go-stock-cli.ps1 tool info --name GetStockInfo
+.\scripts\go-stock-cli.ps1 tool GetStockInfo --stock-code 600237
 ```
 
 JSON 输出：
@@ -64,7 +64,7 @@ skills/go-stock/references/tool-catalog.md
 ## 功能选择规则
 
 - 默认先运行 `go-stock-cli help` 看功能树，再调用具体命令路径。
-- GUI 主树没有覆盖但归档工具层有的能力，用 `tool list` -> `tool info` -> `tool 工具名`。例如五档盘口可调用 `tool GetStockOrderBook`。
+- GUI 主树没有覆盖但归档工具层有的能力，用 `tool list` -> `tool info` -> `tool 工具名`。盯盘优先用 `tool GetStockInfo`，它包含五档盘口概览；`GetStockOrderBook` 只作为专用盘口补充工具。
 - 股票名称、简称、拼音或代码不确定时，用 `portfolio search` 或 `kline search` 确认。
 - 市场复盘优先：`market news` -> `market major-index` -> `market money-flow stock` -> `research uplimit`。`market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。
 - 个股分析优先：`portfolio view detail` -> `portfolio view daily-k`/`kline show` -> `portfolio view money` -> `portfolio view notice`/`portfolio view report`。
@@ -82,7 +82,8 @@ skills/go-stock/references/tool-catalog.md
 - 板块、行业、概念不确定时，先用 `QueryBKDictInfo` 或 `SearchBk`。
 - 个股分析按顺序组合：行情/K线 -> 财务/F10 -> 资金流/龙虎榜 -> 新闻/公告/研报 -> 风险点。
 - 只需要当前时间时用 `GetCurrentTime`；需要全球指数和开盘状态时用 `GetGlobalMarketStatus`，不要把两类信息混在一个上下文里。
-- 需要买一/卖一、五档委托、封单或盘口深度时，用 `GetStockOrderBook`；普通个股行情用 `GetStockInfo`。
+- 需要买一/卖一、五档委托、封单或盘口深度时，先用 `GetStockInfo`；它比专用 `GetStockOrderBook` 更适合盯盘且包含盘口概览。若必须查独立盘口字段，再调用 `GetStockOrderBook`；该工具返回空盘口时 CLI 会自动尝试 `GetStockInfo` 兜底。
+- raw tool 股票参数可用 `--stockCode`、`--stock-code`、`--stock_code` 或 `--stockcode`；多股参数在 PowerShell 中建议加引号，例如 `--stockCode='sh600237,sz002335'`，或使用 `--args-json`。
 - 市场复盘按顺序组合：市场总览 -> 全球股指/北向资金 -> 异动排行 -> 热点事件 -> 涨停梯队。
 - 条件选股优先用 `SearchStockByIndicators` 处理自然语言条件；需要结构化技术形态时用 `FilterStocks`。
 - 研报、公告、政策、新闻搜索优先用 `FinanceSearch`，再按对象细分到 `SearchReport`、`SearchAnnouncement`、`SearchNews`。
@@ -95,9 +96,11 @@ skills/go-stock/references/tool-catalog.md
 - 用户问“涨跌家数比”“涨跌停家数比”时，优先用 `GetMarketData`；若在 App/Wails 内部，可直接用 `GetTodayMarketStatistic` 的 `upDownRatio`、`limitRatio` 字段。
 - 用户问“当日异动次数最多的概念”时，优先用 `GetChangeRank(days=1, topN=...)`。如果本地 `stock_change_history` 或 `all_stock_info` 为空，改用实时 `GetStockChanges` 全量异动股票，再逐只用 `GetStockConceptInfo` 补概念并按概念聚合异动次数。
 - 基金分析先 `SearchFund` 确认代码，再查 `GetFundInfo`、`GetFundHistoryNetValue`、`GetFundTop10Holdings`。
-- 用户把持仓告诉 Agent 并要求设置提醒时，先用 `QueryStockCodeInfo` 确认代码，再用 `GetFollowedStocks` 查看已有设置；Agent 可以自行提出止损价、止盈价、涨跌提醒和股价提醒，但必须先调用 `portfolio position set` 生成预览和确认令牌，复述给用户并等待二次确认后，才允许用同一组参数加 `confirm=true` 和 `confirmToken` 写入。
+- 用户把持仓告诉 Agent 并要求设置提醒时，先用 `QueryStockCodeInfo` 确认代码，再用 `GetFollowedStocks` 查看已有设置；Agent 可以自行提出止损价、止盈价、涨跌提醒和股价提醒，但必须先调用 `portfolio position set` 生成预览和确认令牌，复述给用户并等待二次确认后，才允许用同一组参数加 `--confirm` 和 `confirmToken` 写入。`portfolio list` 是 go-stock 本地自选/持仓元数据，不是券商实时持仓；用户实际买卖后需要走该流程更新本地数量和提醒。
 - K 线命令支持 `002335` 这类深市前导 0 纯数字代码，也支持 `sz002335`、`002335.SZ`。
 - `research uplimit` 若涨停梯队接口返回空或 0，会附带市场总览交叉验证；盯盘时不要单独依赖涨停梯队接口判断市场情绪。
+- Codex 审批层或执行链路出现 `stream disconnected before completion` 时，把它当作执行失败，不要说成 go-stock 数据源无数据；只复用上一轮成功数据并标明时间。
+- 15:00 收盘后盘口仍可能返回最近快照，只能按收盘附近快照解读，不要描述成仍可成交的实时盘口。
 - 涉及时效数据时，在回答中标明查询时间、日期参数或交易日。
 - 输出研究结论时使用“数据解读/可能原因/风险提示”口径，不给确定性买卖建议。
 
@@ -111,7 +114,7 @@ skills/go-stock/references/tool-catalog.md
 | 看全球指数 | `GetGlobalMarketStatus` | 全球主要股指行情和开盘状态。 |
 | 查行业涨幅排名 | `GetIndustryRank` | 对应“行业排名 > 行业涨幅排名”。 |
 | 看个股行情 | `GetStockInfo` | 个股实时行情，涨跌按昨收计算，并附带盘口概览。 |
-| 看盘口/封单 | `GetStockOrderBook` | 买一至买五、卖一至卖五、当前价、涨跌幅。 |
+| 看盘口/封单 | `GetStockInfo` | 盯盘优先工具，包含行情和五档盘口概览；`GetStockOrderBook` 仅作专用补充。 |
 | 看K线趋势 | `GetEastMoneyKLineWithMA` | K 线并带均线，输出列顺序稳定。 |
 | 查最新财务 | `GetStockLatestFinance` | EPS、ROE、营收、净利润等核心指标。 |
 | 查估值位置 | `GetStockValuationPercentile` | PE 等估值历史分位。 |
@@ -141,7 +144,7 @@ skills/go-stock/references/tool-catalog.md
 
 个股画像：
 1. `QueryStockCodeInfo` 确认股票代码。
-2. `GetStockInfo` 和 `GetEastMoneyKLineWithMA` 查看行情与趋势；若问题涉及封单、买卖盘或委托队列，再调用 `GetStockOrderBook`。
+2. `GetStockInfo` 和 `GetEastMoneyKLineWithMA` 查看行情、盘口与趋势；若必须查看专用盘口字段，再调用 `GetStockOrderBook`。
 3. `GetStockLatestFinance`, `GetStockQtrMainFinance`, `GetStockValuationPercentile` 查看财务和估值。
 4. `GetMoneyRankSina`, `GetStockMoneyData`, `GetStockBillboard`, `GetStockResearchReport`, `SearchAnnouncement`, `FinanceSearch` 补充资金、龙虎榜、研报、公告和新闻。
 5. 按“行情表现、基本面、资金/情绪、催化因素、风险点”输出。
@@ -190,7 +193,7 @@ skills/go-stock/references/tool-catalog.md
 3. `GetFollowedStocks` 查看当前自选股成本、数量、开仓价、止盈价、止损价、涨跌提醒和股价提醒。
 4. Agent 可以根据成本价、近期波动、用户风险偏好提出止盈价、止损价、涨跌提醒和股价提醒，并在 `reason` 中说明依据。
 5. 首次调用 `portfolio position set` 时不确认写入，得到预览和 `confirmToken`，不得写库。
-6. 只有用户明确确认后，才使用完全相同的参数加 `confirm=true` 和 `confirmToken` 再次调用写入。
+6. 只有用户明确确认后，才使用完全相同的参数加 `--confirm` 和 `confirmToken` 再次调用写入。
 
 ## 安全边界
 

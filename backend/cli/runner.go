@@ -180,13 +180,28 @@ func (r *toolRunner) call(toolName string, mapper func(map[string]any) map[strin
 		if mapper != nil {
 			args = mapper(args)
 		}
+		if err := validateRawToolArgs(toolName, args); err != nil {
+			return "", err
+		}
 		if isSingleStockArchiveTool(toolName) {
 			codes := stockCodesFromCLIArgs(args)
 			if len(codes) > 1 {
 				return r.callPerStockTool(ctx, toolName, tool, args, codes)
 			}
 		}
-		return invokeToolSafely(ctx, toolName, tool, args)
+		out, err := invokeToolSafely(ctx, toolName, tool, args)
+		if err != nil {
+			return "", err
+		}
+		if toolName == "GetStockOrderBook" && shouldFallbackOrderBook(out) {
+			if fallback, ok := r.tools["GetStockInfo"]; ok {
+				fallbackOut, fallbackErr := invokeToolSafely(ctx, "GetStockInfo", fallback, args)
+				if fallbackErr == nil && strings.TrimSpace(fallbackOut) != "" && !isEmptyStockInfoOutput(fallbackOut) {
+					return strings.TrimSpace(out) + "\n\n## 盘口兜底\n\n`GetStockOrderBook` 未返回盘口数据，已自动改用 `GetStockInfo`。`GetStockInfo` 同样包含买一至买五、卖一至卖五；收盘后请按最近快照理解，不代表仍可成交。\n\n" + strings.TrimSpace(fallbackOut), nil
+				}
+			}
+		}
+		return out, nil
 	}
 }
 
@@ -277,6 +292,46 @@ func isSingleStockArchiveTool(name string) bool {
 	default:
 		return false
 	}
+}
+
+func validateRawToolArgs(toolName string, args map[string]any) error {
+	switch toolName {
+	case "GetStockInfo", "GetStockOrderBook":
+		if _, err := requiredString(args, "stockCode", "stockCodes"); err != nil {
+			return fmt.Errorf("%s requires stockCode; use --stockCode 600237, --stock-code 600237, or --args-json '{\"stockCode\":\"600237\"}'", toolName)
+		}
+	}
+	return nil
+}
+
+func shouldFallbackOrderBook(out string) bool {
+	normalized := strings.ReplaceAll(strings.TrimSpace(out), " ", "")
+	for _, marker := range []string{
+		"未找到盘口数据",
+		"未获取到盘口数据",
+		"暂无盘口数据",
+		"无盘口数据",
+	} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isEmptyStockInfoOutput(out string) bool {
+	normalized := strings.ReplaceAll(strings.TrimSpace(out), " ", "")
+	for _, marker := range []string{
+		"未找到股票信息",
+		"未获取到股票信息",
+		"暂无股票信息",
+		"无股票信息",
+	} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *toolRunner) rawToolCommands() []Command {
@@ -379,6 +434,11 @@ func (r *toolRunner) runRawToolInfo(_ context.Context, args map[string]any) (str
 	b.WriteString("```json\n")
 	b.WriteString(rawToolSchemaJSON(entry.Info))
 	b.WriteString("\n```\n")
+	if hints := rawToolCLIHints(entry.Name); hints != "" {
+		b.WriteString("\n## CLI 调用提示\n\n")
+		b.WriteString(hints)
+		b.WriteString("\n")
+	}
 	return b.String(), nil
 }
 
@@ -453,6 +513,44 @@ func rawToolSchemaJSON(info *schema.ToolInfo) string {
 		return `{"type":"object","properties":{},"required":[]}`
 	}
 	return string(data)
+}
+
+func rawToolCLIHints(name string) string {
+	var hints []string
+	switch name {
+	case "GetStockInfo":
+		hints = append(hints,
+			"- 推荐盯盘优先调用：`tool GetStockInfo --stock-code sz002335`；该工具包含实时行情和五档盘口概览。",
+			"- `stockCode` 可用 `--stockCode`、`--stock-code`、`--stock_code` 或 `--args-json '{\"stockCode\":\"sz002335\"}'` 传入。",
+		)
+	case "GetStockOrderBook":
+		hints = append(hints,
+			"- 该工具专查五档盘口；若数据源返回空，CLI 会自动尝试用 `GetStockInfo` 兜底。",
+			"- 盯盘优先使用 `tool GetStockInfo`；需要单独盘口字段时再调用本工具。",
+			"- `stockCode` 可用 `--stockCode`、`--stock-code`、`--stock_code` 或 `--args-json '{\"stockCode\":\"sz002335\"}'` 传入。",
+		)
+	case "GetStockLatestFinance":
+		hints = append(hints,
+			"- CLI 已对多股票输入做逐只拆分，避免底层单股接口把多代码合并或 panic。",
+			"- PowerShell 中多股票建议写成 `--stockCode='sz002335,sz002506'`，或使用 `--args-json`。",
+		)
+	}
+	if hasStockCodeLikeInput(name) {
+		hints = append(hints, "- PowerShell 中逗号分隔参数建议加引号，例如 `--stockCode='sh600237,sz002335'`。")
+	}
+	if len(hints) == 0 {
+		return ""
+	}
+	return strings.Join(hints, "\n")
+}
+
+func hasStockCodeLikeInput(name string) bool {
+	switch name {
+	case "GetStockInfo", "GetStockOrderBook", "GetStockLatestFinance", "GetStockConceptInfo", "GetEastMoneyKLine", "GetEastMoneyKLineWithMA", "GetStockKLine":
+		return true
+	default:
+		return false
+	}
 }
 
 func oneLine(s string) string {
@@ -534,14 +632,22 @@ func normalizeCommonArgs(args map[string]any) {
 		"code":                 "stockCode",
 		"stock-code":           "stockCode",
 		"stock_code":           "stockCode",
+		"stockcode":            "stockCode",
+		"stock-codes":          "stockCodes",
+		"stock_codes":          "stockCodes",
+		"stockcodes":           "stockCodes",
 		"stock-name":           "stockName",
 		"stock_name":           "stockName",
+		"stockname":            "stockName",
 		"fund-code":            "fundCode",
 		"fund_code":            "fundCode",
+		"fundcode":             "fundCode",
 		"group-id":             "groupId",
 		"group_id":             "groupId",
+		"groupid":              "groupId",
 		"new-name":             "newName",
 		"new_name":             "newName",
+		"newname":              "newName",
 		"top-n":                "topN",
 		"top_n":                "topN",
 		"page-size":            "pageSize",

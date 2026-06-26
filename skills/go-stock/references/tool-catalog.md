@@ -12,8 +12,8 @@ Agent 应先用 `go-stock-cli help` 读取功能树，再调用具体命令路�
 
 ```powershell
 .\scripts\go-stock-cli.ps1 tool list
-.\scripts\go-stock-cli.ps1 tool info --name GetStockOrderBook
-.\scripts\go-stock-cli.ps1 tool GetStockOrderBook --stock-code 600237
+.\scripts\go-stock-cli.ps1 tool info --name GetStockInfo
+.\scripts\go-stock-cli.ps1 tool GetStockInfo --stock-code 600237
 ```
 
 项目本地对外 MCP 服务已归档；旧的 90+ 原始 MCP tools/list 不再是新集成目标。
@@ -70,7 +70,7 @@ go-stock
 .\scripts\go-stock-cli.ps1 market industry-rank concept-money --sort netamount --limit 20
 .\scripts\go-stock-cli.ps1 market money-flow stock --sort r0_net --limit 20
 .\scripts\go-stock-cli.ps1 kline show --stock-code 002335 --k-line-type day --limit 120
-.\scripts\go-stock-cli.ps1 tool GetStockLatestFinance --stock-code sz002335,sz002506,sh603690
+.\scripts\go-stock-cli.ps1 tool GetStockLatestFinance --stockCode='sz002335,sz002506,sh603690'
 ```
 
 `market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。K 线命令支持 `002335` 这类深市前导 0 代码，不需要强制改成 `sz002335`。
@@ -83,6 +83,14 @@ go-stock
 
 持仓/提醒设置必须通过 `portfolio position set` 二次确认。原写入工具 `SetFollowedStockPosition` 不提供 raw `tool SetFollowedStockPosition` 直连入口。
 
+raw tool 参数和盯盘注意事项：
+
+- 股票代码参数可用 `--stockCode`、`--stock-code`、`--stock_code`、`--stockcode`；缺失时 `GetStockInfo` / `GetStockOrderBook` 会直接提示参数错误。
+- PowerShell 多股参数建议加引号，例如 `--stockCode='sh600237,sz002335'`，也可用 `--args-json '{"stockCode":"sh600237,sz002335"}'`。
+- 盯盘优先用 `tool GetStockInfo`；它包含行情和五档盘口概览。`GetStockOrderBook` 是专用盘口工具，返回空盘口时 CLI 会自动尝试 `GetStockInfo` 兜底。
+- Codex 审批或执行链路出现 `stream disconnected before completion` 时，属于执行失败，不等同于 go-stock 数据源为空；只能复用上一轮成功数据并标明时间。
+- 收盘后盘口仍可能返回最近快照，只能按收盘附近快照理解，不代表仍可成交。
+
 ## 归档工具词典
 
 以下工具已迁移到 CLI `tool <原工具名>` 兼容层。被禁用的写入/通知工具在文末单独列出。
@@ -94,7 +102,7 @@ go-stock
 | `QueryStockCodeInfo` | 查询股票/指数名称、代码、拼音、交易所等基础信息；本地表未命中时会用内置 `stock_basic.json` 和代码格式兜底。 | 用户给的是简称、中文名、拼音或不完整代码。 | `searchWord`: 股票名、代码、拼音，如 `中晶科技`、`003026`。 |
 | `QueryBKDictInfo` | 查询板块、行业、概念名称和代码字典。 | 需要确认行业/概念/板块代码。 | 无参数。 |
 | `GetCurrentTime` | 只获取当前本地时间和星期，不附带行情表。 | 需要给行情或报告标注查询时间。 | 无参数。 |
-| `GetFollowedStocks` | 查询本地关注/自选股票，返回股票代码、名称、成本价格、持仓数量、开仓价、止盈价、止损价、涨跌提醒、股价提醒和排序。 | 用户问“我的自选股”“关注列表”，或在设置持仓提醒前读取当前值。 | `groupId`: 可选分组 ID；不传返回所有自选。 |
+| `GetFollowedStocks` | 查询本地关注/自选股票，返回股票代码、名称、成本价格、持仓数量、开仓价、止盈价、止损价、涨跌提醒、股价提醒和排序。它是 go-stock 本地元数据，不是券商真实持仓同步。 | 用户问“我的自选股”“关注列表”，或在设置持仓提醒前读取当前值。 | `groupId`: 可选分组 ID；不传返回所有自选。 |
 | `GetHolidayInfo` | 查询某天是否节假日、是否调休。 | 判断某个日期是否休市或节假日。 | `date`: `YYYY-MM-DD`，可省略。 |
 | `GetHolidayYear` | 查询某年的节假日安排。 | 年度交易日/节假日分析。 | `year`: 年份。 |
 | `GetHolidayBatch` | 批量查询多个日期节假日信息。 | 需要一次判断多个日期。 | 日期列表。 |
@@ -130,8 +138,8 @@ go-stock
 
 | 工具 | 作用 | 适合什么时候用 | 常见输入提示 |
 |---|---|---|---|
-| `GetStockInfo` | 查询个股实时行情，涨跌额/涨跌幅按当前价和昨收计算，并附带五档盘口概览。 | 个股价格、涨跌幅、成交量、盘口概要。 | `stockCode`: 股票代码，支持 `sz003026`、`003026.SZ` 等。 |
-| `GetStockOrderBook` | 查询五档盘口，包含买一至买五、卖一至卖五、当前价、涨跌额、涨跌幅、更新时间。 | 判断封单、委托队列、买卖盘深度、为什么委托未成交。 | `stockCode`: 股票代码，多只用英文逗号分隔。 |
+| `GetStockInfo` | 查询个股实时行情，涨跌额/涨跌幅按当前价和昨收计算，并附带五档盘口概览。 | 盯盘首选；看个股价格、涨跌幅、成交量、盘口概要。 | `stockCode`: 股票代码，支持 `sz003026`、`003026.SZ` 等；CLI 同时接受 `--stock-code` 等别名。 |
+| `GetStockOrderBook` | 查询五档盘口，包含买一至买五、卖一至卖五、当前价、涨跌额、涨跌幅、更新时间。若返回空盘口，CLI 会自动尝试 `GetStockInfo` 兜底。 | 判断封单、委托队列、买卖盘深度、为什么委托未成交；盯盘默认先用 `GetStockInfo`。 | `stockCode`: 股票代码，多只用英文逗号分隔；PowerShell 中建议加引号。 |
 | `GetStockKLine` | 查询个股 K 线数据。 | 技术走势、历史行情。 | 股票代码、周期、复权、数量。 |
 | `GetEastMoneyKLine` | 查询东方财富 K 线。 | 需要东方财富行情源。 | 股票代码、周期、复权。 |
 | `GetEastMoneyKLineWithMA` | 查询带均线的 K 线，输出列顺序稳定，便于人读和程序解析。 | 做趋势、均线、技术面分析。 | 股票代码、周期、均线参数，如 `maPeriods: 5,10,20,60`。 |
@@ -277,7 +285,7 @@ go-stock
 
 | 命令 | 作用 | 适合什么时候用 | 常见输入提示 |
 |---|---|---|---|
-| `portfolio position set` | 设置本地自选股持仓和提醒字段：成本价、持仓数量、开仓价、止盈价、止损价、涨跌提醒、股价提醒、排序。第一次调用只生成预览和 `confirmToken`，不会写入；第二次必须带确认 token 才写入。 | 用户把持仓告诉 Agent，希望 Agent 自动设置成本和提醒；Agent 可自行判断止损、止盈、涨跌提醒，但需要二次确认。 | 必填：`stockCode`, `costPrice`, `volume`。常用可选：`stockName`, `entryPrice`, `takeProfitPrice`, `stopLossPrice`, `alarmChangePercent`, `alarmPrice`, `sort`, `reason`, `confirm`, `confirmToken`。 |
+| `portfolio position set` | 设置本地自选股持仓和提醒字段：成本价、持仓数量、开仓价、止盈价、止损价、涨跌提醒、股价提醒、排序。第一次调用只生成预览和 `confirmToken`，不会写入；第二次必须带确认 token 才写入。 | 用户把持仓告诉 Agent，希望 Agent 自动设置成本和提醒；用户实际买卖后也要用它更新本地数量。Agent 可自行判断止损、止盈、涨跌提醒，但需要二次确认。 | 必填：`stockCode`, `costPrice`, `volume`。常用可选：`stockName`, `entryPrice`, `takeProfitPrice`, `stopLossPrice`, `alarmChangePercent`, `alarmPrice`, `sort`, `reason`, `confirm`, `confirmToken`。确认推荐用 CLI flag `--confirm`。 |
 
 ## CLI 自选分组命令
 
@@ -297,7 +305,7 @@ go-stock
 2. 用 `GetFollowedStocks` 读取当前自选股成本和提醒字段。
 3. Agent 根据用户持仓、成本、风险偏好或近期波动提出 `takeProfitPrice`、`stopLossPrice`、`alarmChangePercent`、`alarmPrice`，并在 `reason` 中说明依据。
 4. 先调用 `portfolio position set`，不确认写入，获取预览和确认令牌。
-5. 把预览复述给用户；只有用户明确同意后，才用完全相同参数加 `confirm=true`、`confirmToken=<预览令牌>` 再次调用。
+5. 把预览复述给用户；只有用户明确同意后，才用完全相同参数加 `--confirm`、`confirmToken=<预览令牌>` 再次调用。
 
 ## 默认不开放或不建议调用
 
