@@ -221,6 +221,19 @@ func (a *App) CheckUpdate(flag int) {
 		}
 	}
 
+	if Version == "" {
+		if flag == 1 {
+			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+				"time":    "本地构建版本",
+				"isRed":   true,
+				"source":  "go-stock",
+				"content": "当前为本地构建版本，已禁用官方版本自动替换。如需更新，请重新从本地源码打包。",
+			})
+		}
+		logger.SugaredLogger.Info("skip official self update for local build")
+		return
+	}
+
 	updateChannel := a.GetConfig().UpdateChannel
 	if updateChannel == "" {
 		updateChannel = "release"
@@ -1738,11 +1751,12 @@ func (a *App) shutdown(ctx context.Context) {
 // Greet returns a greeting for the given name
 func (a *App) Greet(stockCode string) *data.StockInfo {
 	//stockInfo, _ := data.NewStockDataApi().GetStockCodeRealTimeData(stockCode)
+	normalizedCode := data.NormalizeFollowedStockCode(stockCode)
 
 	follow := &data.FollowedStock{
-		StockCode: stockCode,
+		StockCode: normalizedCode,
 	}
-	db.Dao.Model(follow).Where("stock_code = ?", stockCode).Preload("Groups").Preload("Groups.GroupInfo").First(follow)
+	db.Dao.Model(follow).Where("stock_code = ?", normalizedCode).Preload("Groups").Preload("Groups.GroupInfo").First(follow)
 	stockInfo := getStockInfo(*follow)
 	return stockInfo
 }

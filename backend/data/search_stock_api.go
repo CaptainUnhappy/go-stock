@@ -6,6 +6,7 @@ import (
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
 	"go-stock/backend/util"
+	"strings"
 	"time"
 
 	"github.com/duke-git/lancet/v2/mathutil"
@@ -19,17 +20,26 @@ type SearchStockApi struct {
 	words string
 }
 
+const defaultEastMoneyQgqpBID = "16888888888888888888"
+
 func NewSearchStockApi(words string) *SearchStockApi {
 	return &SearchStockApi{words: words}
 }
-func (s SearchStockApi) SearchStock(pageSize int) map[string]any {
-	qgqpBId := NewSettingsApi().Config.QgqpBId
-	if qgqpBId == "" {
-		return map[string]any{
-			"code":    -1,
-			"message": "请先获取东财用户标识（qgqp_b_id）：打开浏览器,访问东财网站，按F12打开开发人员工具-》网络面板，随便点开一个请求，复制请求cookie中qgqp_b_id对应的值。保存到设置中的东财唯一标识输入框",
-		}
+
+func resolveEastMoneyQgqpBID(configured string) string {
+	configured = strings.TrimSpace(configured)
+	if configured != "" {
+		return configured
 	}
+	return defaultEastMoneyQgqpBID
+}
+
+func configuredEastMoneyQgqpBID() string {
+	return resolveEastMoneyQgqpBID(NewSettingsApi().Config.QgqpBId)
+}
+
+func (s SearchStockApi) SearchStock(pageSize int) map[string]any {
+	qgqpBId := configuredEastMoneyQgqpBID()
 	url := "https://np-tjxg-g.eastmoney.com/api/smart-tag/stock/v3/pw/search-code"
 	resp, err := SharedHTTPClient.SetTimeout(time.Duration(30)*time.Second).R().
 		SetHeader("Host", "np-tjxg-g.eastmoney.com").
@@ -37,6 +47,7 @@ func (s SearchStockApi) SearchStock(pageSize int) map[string]any {
 		SetHeader("Referer", "https://xuangu.eastmoney.com/").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:145.0) Gecko/20100101 Firefox/145.0").
 		SetHeader("Content-Type", "application/json").
+		SetHeader("Cookie", fmt.Sprintf("qgqp_b_id=%s", qgqpBId)).
 		SetBody(fmt.Sprintf(`{
 				"keyWord": "%s",
 				"pageSize": %d,
@@ -69,19 +80,14 @@ func (s SearchStockApi) SearchStock(pageSize int) map[string]any {
 
 func (s SearchStockApi) SearchBk(pageSize int) map[string]any {
 	url := "https://np-tjxg-b.eastmoney.com/api/smart-tag/bkc/v3/pw/search-code"
-	qgqpBId := NewSettingsApi().Config.QgqpBId
-	if qgqpBId == "" {
-		return map[string]any{
-			"code":    -1,
-			"message": "请先获取东财用户标识（qgqp_b_id）：打开浏览器,访问东财网站，按F12打开开发人员工具-》网络面板，随便点开一个请求，复制请求cookie中qgqp_b_id对应的值。保存到设置中的东财唯一标识输入框",
-		}
-	}
+	qgqpBId := configuredEastMoneyQgqpBID()
 	resp, err := SharedHTTPClient.SetTimeout(time.Duration(30)*time.Second).R().
 		SetHeader("Host", "np-tjxg-g.eastmoney.com").
 		SetHeader("Origin", "https://xuangu.eastmoney.com").
 		SetHeader("Referer", "https://xuangu.eastmoney.com/").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:145.0) Gecko/20100101 Firefox/145.0").
 		SetHeader("Content-Type", "application/json").
+		SetHeader("Cookie", fmt.Sprintf("qgqp_b_id=%s", qgqpBId)).
 		SetBody(fmt.Sprintf(`{
 				"keyWord": "%s",
 				"pageSize": %d,
@@ -114,19 +120,14 @@ func (s SearchStockApi) SearchBk(pageSize int) map[string]any {
 
 func (s SearchStockApi) SearchETF(pageSize int) map[string]any {
 	url := "https://np-tjxg-b.eastmoney.com/api/smart-tag/etf/v3/pw/search-code"
-	qgqpBId := NewSettingsApi().Config.QgqpBId
-	if qgqpBId == "" {
-		return map[string]any{
-			"code":    -1,
-			"message": "请先获取东财用户标识（qgqp_b_id）：打开浏览器,访问东财网站，按F12打开开发人员工具-》网络面板，随便点开一个请求，复制请求cookie中qgqp_b_id对应的值。保存到设置中的东财唯一标识输入框",
-		}
-	}
+	qgqpBId := configuredEastMoneyQgqpBID()
 	resp, err := SharedHTTPClient.SetTimeout(time.Duration(30)*time.Second).R().
 		SetHeader("Host", "np-tjxg-g.eastmoney.com").
 		SetHeader("Origin", "https://xuangu.eastmoney.com").
 		SetHeader("Referer", "https://xuangu.eastmoney.com/").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:145.0) Gecko/20100101 Firefox/145.0").
 		SetHeader("Content-Type", "application/json").
+		SetHeader("Cookie", fmt.Sprintf("qgqp_b_id=%s", qgqpBId)).
 		SetBody(fmt.Sprintf(`{
 				"keyWord": "%s",
 				"pageSize": %d,

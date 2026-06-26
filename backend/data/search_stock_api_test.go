@@ -14,6 +14,15 @@ import (
 	"github.com/duke-git/lancet/v2/random"
 )
 
+func TestResolveEastMoneyQgqpBID(t *testing.T) {
+	if got := resolveEastMoneyQgqpBID(""); got != defaultEastMoneyQgqpBID {
+		t.Fatalf("empty qgqp_b_id resolved to %q, want default %q", got, defaultEastMoneyQgqpBID)
+	}
+	if got := resolveEastMoneyQgqpBID(" custom-id "); got != "custom-id" {
+		t.Fatalf("configured qgqp_b_id resolved to %q, want custom-id", got)
+	}
+}
+
 func TestSearchStock(t *testing.T) {
 	db.Init("../../data/stock.db")
 

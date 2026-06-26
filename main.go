@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	assistantweb "go-stock/ai-assistant-web"
+	"go-stock/backend/appdata"
 	"go-stock/backend/data"
 	"go-stock/backend/db"
 	log "go-stock/backend/logger"
 	"go-stock/backend/machineid"
 	"go-stock/backend/models"
-	"os"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -57,8 +57,6 @@ var stocksBinUS []byte
 //go:embed docs/go-stock使用手册.md
 var userManual []byte
 
-//go:generate cp -R ./data ./build/bin
-
 var Version string
 var VersionCommit string
 var OFFICIAL_STATEMENT string
@@ -72,11 +70,21 @@ func main() {
 		}
 	}()
 
-	checkDir("data")
+	ensureBuildKey()
+	paths, migration, err := appdata.Prepare()
+	if err != nil {
+		log.SugaredLogger.Fatalf("prepare app data directory failed: %v", err)
+	}
+	log.SugaredLogger.Infof("app data directory: %s", paths.BaseDir)
+	log.SugaredLogger.Infof("database path: %s", paths.DBPath)
+	if migration.Migrated {
+		log.SugaredLogger.Infof("migrated legacy database from %s to %s: %v", migration.SourceDir, migration.TargetDir, migration.Files)
+	}
+
 	machineid.Init(BuildKey)
 	data.SponsorDecryptKeyHex = BuildKey
 	data.SetAppIcon(icon)
-	db.Init("")
+	db.Init(paths.DBPath)
 	data.InitAnalyzeSentiment()
 	go AutoMigrate()
 
@@ -188,7 +196,7 @@ func main() {
 		BackgroundColour:         backgroundColour,
 		Assets:                   assets,
 		Menu:                     AppMenu,
-		Logger:                   logger.NewFileLogger("./logs/wails.log"),
+		Logger:                   logger.NewFileLogger(paths.WailsLogPath),
 		LogLevel:                 logger.DEBUG,
 		LogLevelProduction:       logger.INFO,
 		OnStartup:                app.startup,
@@ -467,12 +475,7 @@ func initStockData(ctx context.Context) {
 	//}
 }
 
-func checkDir(dir string) {
-	_, err := os.Stat(dir)
-	if os.IsNotExist(err) {
-		os.Mkdir(dir, os.ModePerm)
-		log.SugaredLogger.Info("create dir: " + dir)
-	}
+func ensureBuildKey() {
 	if BuildKey == "" {
 		BuildKey = "cc1e0d684e32f176c56ff1fcf384dcd9"
 	}

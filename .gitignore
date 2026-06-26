@@ -108,6 +108,7 @@ dist
 .qoder
 .idea/
 /data/*.db*
+data-backups/
 ai-assistant-web/data/*.db*
 *.exe
 /build/bin/*
@@ -115,3 +116,4 @@ frontend/package.json.md5
 /build/us.json
 /build-dev.bat
 /build-prod.bat
+.gocache/

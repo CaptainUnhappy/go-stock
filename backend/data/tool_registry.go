@@ -84,6 +84,12 @@ var toolRequiredKey = map[string]string{
 
 // isApiKeyConfigured 检查指定类型的 API Key 是否已配置
 func isApiKeyConfigured(keyType string) bool {
+	// SearchStockApi 内部已经为 qgqp_b_id 提供默认东财用户标识兜底，
+	// 因此 SearchStock/SearchBk/SearchETF 系列不应再因为本地设置为空而被隐藏。
+	if keyType == "QgqpBId" {
+		return true
+	}
+
 	config := GetSettingConfig()
 	if config == nil || config.Settings == nil {
 		return false
@@ -93,8 +99,6 @@ func isApiKeyConfigured(keyType string) bool {
 		return strings.TrimSpace(config.IwencaiApiKey) != ""
 	case "EmApiKey":
 		return strings.TrimSpace(config.EmApiKey) != ""
-	case "QgqpBId":
-		return strings.TrimSpace(config.QgqpBId) != ""
 	case "DingRobot":
 		return config.DingPushEnable && strings.TrimSpace(config.DingRobot) != ""
 	}

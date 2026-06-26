@@ -17,6 +17,7 @@ import (
 	"io/ioutil"
 	url2 "net/url"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +38,63 @@ import (
 
 const sinaStockUrl = "http://hq.sinajs.cn/rn=%d&list=%s"
 const txStockUrl = "http://qt.gtimg.cn/?_=%d&q=%s"
+
+// NormalizeFollowedStockCode converts common stock code formats to the
+// followed_stock.stock_code format used by the local database.
+func NormalizeFollowedStockCode(stockCode string) string {
+	code := strings.TrimSpace(stockCode)
+	if code == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(code)
+	digits := RemoveAllNonDigitChar(code)
+
+	switch {
+	case strings.HasSuffix(lower, ".sz"):
+		return "sz" + strings.TrimSuffix(lower, ".sz")
+	case strings.HasSuffix(lower, ".sh"):
+		return "sh" + strings.TrimSuffix(lower, ".sh")
+	case strings.HasSuffix(lower, ".bj"):
+		return "bj" + strings.TrimSuffix(lower, ".bj")
+	case strings.HasSuffix(lower, ".hk"):
+		return "hk" + strings.TrimSuffix(lower, ".hk")
+	case strings.HasPrefix(lower, "sh"), strings.HasPrefix(lower, "sz"), strings.HasPrefix(lower, "bj"), strings.HasPrefix(lower, "hk"), strings.HasPrefix(lower, "us"), strings.HasPrefix(lower, "gb_"):
+		return lower
+	case len(digits) == 6 && (strings.HasPrefix(digits, "6") || strings.HasPrefix(digits, "9")):
+		return "sh" + digits
+	case len(digits) == 6 && (strings.HasPrefix(digits, "4") || strings.HasPrefix(digits, "8")):
+		return "bj" + digits
+	case len(digits) == 6:
+		return "sz" + digits
+	default:
+		return lower
+	}
+}
+
+func updateFollowedStockByCode(stockCode string, updates map[string]any) string {
+	normalizedCode := NormalizeFollowedStockCode(stockCode)
+	if normalizedCode == "" {
+		return "股票代码不能为空"
+	}
+
+	result := db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", normalizedCode).Updates(updates)
+	if result.Error != nil {
+		logger.SugaredLogger.Error(result.Error.Error())
+		return "设置失败"
+	}
+	if result.RowsAffected == 0 {
+		var count int64
+		if err := db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", normalizedCode).Count(&count).Error; err != nil {
+			logger.SugaredLogger.Error(err.Error())
+			return "设置失败"
+		}
+		if count == 0 {
+			return "股票未关注"
+		}
+	}
+	return "设置成功"
+}
 
 const tushareApiUrl = "http://api.tushare.pro"
 
@@ -527,44 +585,23 @@ func (receiver StockDataApi) Follow(stockCode string) string {
 }
 
 func (receiver StockDataApi) UnFollow(stockCode string) string {
-	if strutil.HasPrefixAny(stockCode, []string{"gb_"}) {
-		stockCode = strings.ToUpper(stockCode)
-		stockCode = strings.Replace(stockCode, "gb_", "us", 1)
-		stockCode = strings.Replace(stockCode, "GB_", "us", 1)
-	}
-	db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", strings.ToLower(stockCode)).Delete(&FollowedStock{})
+	stockCode = NormalizeFollowedStockCode(stockCode)
+	db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", stockCode).Delete(&FollowedStock{})
 	return "取消关注成功"
 }
 
 func (receiver StockDataApi) SetCostPriceAndVolume(price float64, volume int64, stockCode string) string {
-	if strutil.HasPrefixAny(stockCode, []string{"gb_"}) {
-		stockCode = strings.ToUpper(stockCode)
-		stockCode = strings.Replace(stockCode, "gb_", "us", 1)
-		stockCode = strings.Replace(stockCode, "GB_", "us", 1)
-	}
-	err := db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", strings.ToLower(stockCode)).Update("cost_price", price).Update("volume", volume).Error
-	if err != nil {
-		logger.SugaredLogger.Error(err.Error())
-		return "设置失败"
-	}
-	return "设置成功"
+	return updateFollowedStockByCode(stockCode, map[string]any{
+		"cost_price": price,
+		"volume":     volume,
+	})
 }
 
 func (receiver StockDataApi) SetAlarmChangePercent(val, alarmPrice float64, stockCode string) string {
-	if strutil.HasPrefixAny(stockCode, []string{"gb_"}) {
-		stockCode = strings.ToUpper(stockCode)
-		stockCode = strings.Replace(stockCode, "gb_", "us", 1)
-		stockCode = strings.Replace(stockCode, "GB_", "us", 1)
-	}
-	err := db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", strings.ToLower(stockCode)).Updates(&map[string]any{
+	return updateFollowedStockByCode(stockCode, map[string]any{
 		"alarm_change_percent": val,
 		"alarm_price":          alarmPrice,
-	}).Error
-	if err != nil {
-		logger.SugaredLogger.Error(err.Error())
-		return "设置失败"
-	}
-	return "设置成功"
+	})
 }
 
 func (receiver StockDataApi) SetStockSort(newSort int64, stockCode string) {
@@ -573,9 +610,11 @@ func (receiver StockDataApi) SetStockSort(newSort int64, stockCode string) {
 	//	stockCode = strings.Replace(stockCode, "gb_", "us", 1)
 	//}
 
+	stockCode = NormalizeFollowedStockCode(stockCode)
+
 	// 获取当前排序值
 	var currentStock FollowedStock
-	if err := db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", strings.ToLower(stockCode)).First(&currentStock).Error; err != nil {
+	if err := db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", stockCode).First(&currentStock).Error; err != nil {
 		logger.SugaredLogger.Error("找不到当前股票: ", err.Error())
 		return
 	}
@@ -595,7 +634,7 @@ func (receiver StockDataApi) SetStockSort(newSort int64, stockCode string) {
 	if count == 0 {
 		// 新位置未被占用，直接更新当前记录
 		if err := db.Dao.Model(&FollowedStock{}).
-			Where("stock_code = ?", strings.ToLower(stockCode)).
+			Where("stock_code = ?", stockCode).
 			Update("sort", newSort).Error; err != nil {
 			logger.SugaredLogger.Error("更新排序位置失败: ", err.Error())
 		}
@@ -619,7 +658,7 @@ func (receiver StockDataApi) SetStockSort(newSort int64, stockCode string) {
 
 		// 更新目标记录的排序
 		if err := db.Dao.Model(&FollowedStock{}).
-			Where("stock_code = ?", strings.ToLower(stockCode)).
+			Where("stock_code = ?", stockCode).
 			Update("sort", newSort).Error; err != nil {
 			logger.SugaredLogger.Error("更新股票排序失败: ", err.Error())
 		}
@@ -627,48 +666,17 @@ func (receiver StockDataApi) SetStockSort(newSort int64, stockCode string) {
 
 }
 func (receiver StockDataApi) SetStockAICron(cron string, stockCode string) {
-	if strutil.HasPrefixAny(stockCode, []string{"gb_"}) {
-		stockCode = strings.ToUpper(stockCode)
-		stockCode = strings.Replace(stockCode, "gb_", "us", 1)
-		stockCode = strings.Replace(stockCode, "GB_", "us", 1)
-	}
-	db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", strings.ToLower(stockCode)).Update("cron", cron)
+	stockCode = NormalizeFollowedStockCode(stockCode)
+	db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", stockCode).Update("cron", cron)
 
 }
 func (receiver StockDataApi) SetTradingPrice(entryPrice, takeProfitPrice, stopLossPrice, costPrice float64, stockCode string) string {
-	stockCode = strings.ToUpper(stockCode)
-	if strings.HasSuffix(stockCode, ".SZ") {
-		stockCode = "sz" + strings.TrimSuffix(stockCode, ".SZ")
-	} else if strings.HasSuffix(stockCode, ".SH") {
-		stockCode = "sh" + strings.TrimSuffix(stockCode, ".SH")
-	} else if strings.HasSuffix(stockCode, ".HK") {
-		stockCode = "hk" + strings.TrimSuffix(stockCode, ".HK")
-	} else if strings.HasSuffix(stockCode, ".BJ") {
-		stockCode = "bj" + strings.TrimSuffix(stockCode, ".BJ")
-	} else if strings.HasPrefix(stockCode, "GB_") {
-		stockCode = strings.Replace(stockCode, "GB_", "us", 1)
-	}
-	lowerStockCode := strings.ToLower(stockCode)
-
-	var stock FollowedStock
-	if err := db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", lowerStockCode).First(&stock).Error; err != nil {
-		return "股票未关注"
-	}
-
-	updates := &map[string]any{
+	return updateFollowedStockByCode(stockCode, map[string]any{
 		"entry_price":       entryPrice,
 		"take_profit_price": takeProfitPrice,
 		"stop_loss_price":   stopLossPrice,
 		"cost_price":        costPrice,
-	}
-	result := db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", lowerStockCode).Updates(updates)
-	if result.Error != nil {
-		return "设置失败"
-	}
-	if result.RowsAffected == 0 {
-		return "设置失败"
-	}
-	return "设置成功"
+	})
 }
 func (receiver StockDataApi) GetFollowList(groupId int) *[]FollowedStock {
 	//logger.SugaredLogger.Infof("GetFollowList %d", groupId)
@@ -766,7 +774,7 @@ func (receiver StockDataApi) GetStockList(key string) []StockBasic {
 
 func (receiver StockDataApi) GetFollowedStockByStockCode(code string) FollowedStock {
 	var result FollowedStock
-	db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", strings.ToLower(code)).First(&result)
+	db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", NormalizeFollowedStockCode(code)).First(&result)
 	return result
 }
 
@@ -2328,11 +2336,51 @@ func JSONToMarkdownTable(jsonData []byte) (string, error) {
 		return "", nil
 	}
 
-	// 获取表头
-	headers := []string{}
+	preferredOrder := map[string]int{}
+	for i, name := range []string{
+		"日期",
+		"时间",
+		"开盘价",
+		"收盘价",
+		"最高价",
+		"最低价",
+		"最新价",
+		"涨跌幅(%)",
+		"涨跌额",
+		"振幅(%)",
+		"换手率(%)",
+		"成交量(万手)",
+		"成交量",
+		"成交额",
+		"MA5",
+		"MA10",
+		"MA20",
+		"MA30",
+		"MA60",
+		"MA120",
+		"MA250",
+	} {
+		preferredOrder[name] = i
+	}
+
+	headers := make([]string, 0, len(data[0]))
 	for key := range data[0] {
 		headers = append(headers, key)
 	}
+	sort.Slice(headers, func(i, j int) bool {
+		pi, okI := preferredOrder[headers[i]]
+		pj, okJ := preferredOrder[headers[j]]
+		switch {
+		case okI && okJ:
+			return pi < pj
+		case okI:
+			return true
+		case okJ:
+			return false
+		default:
+			return headers[i] < headers[j]
+		}
+	})
 
 	// 构建表头行
 	headerRow := "|"

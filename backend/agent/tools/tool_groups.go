@@ -23,6 +23,7 @@ var toolGroupMap = map[string]ToolGroup{
 	"QueryStockCodeInfo":           GroupBase,
 	"QueryBKDictInfo":              GroupBase,
 	"GetCurrentTime":               GroupBase,
+	"GetGlobalMarketStatus":        GroupMarket,
 	"GetFollowedStocks":            GroupBase,
 	"GetHolidayInfo":               GroupBase,
 	"GetHolidayYear":               GroupBase,
@@ -33,6 +34,7 @@ var toolGroupMap = map[string]ToolGroup{
 	"BatchCreateAiRecommendStocks": GroupBase,
 
 	"GetStockInfo":            GroupStockAnalysis,
+	"GetStockOrderBook":       GroupStockAnalysis,
 	"GetStockKLine":           GroupStockAnalysis,
 	"GetEastMoneyKLine":       GroupStockAnalysis,
 	"GetEastMoneyKLineWithMA": GroupStockAnalysis,
@@ -89,6 +91,7 @@ var toolGroupMap = map[string]ToolGroup{
 	"GetStockOperationDeptTrade":  GroupStockAnalysis,
 	"ComparableCompanyAnalysis":   GroupStockAnalysis,
 	"HotspotDiscovery":            GroupMarket,
+	"GetIndustryRank":             GroupMarket,
 
 	"IndustryResearch": GroupStockAnalysis,
 
@@ -128,10 +131,16 @@ var toolGroupMap = map[string]ToolGroup{
 	"HotStrategyTable":      GroupScreening,
 	"HotStockTable":         GroupScreening,
 
-	"GetStockMoneyData":        GroupMoneyFlow,
-	"GetMutualTop10Deal":       GroupMoneyFlow,
-	"GetStockHistoryMoneyData": GroupMoneyFlow,
-	"GetIndustryMoneyRank":     GroupMoneyFlow,
+	"GetStockMoneyData":          GroupMoneyFlow,
+	"GetMoneyRankSina":           GroupMoneyFlow,
+	"GetMutualTop10Deal":         GroupMoneyFlow,
+	"GetStockHistoryMoneyData":   GroupMoneyFlow,
+	"GetIndustryMoneyRank":       GroupMoneyFlow,
+	"GetAllBKCodes":              GroupMoneyFlow,
+	"GetBKFundFlowTopList":       GroupMoneyFlow,
+	"GetBKFundFlowTopListByDate": GroupMoneyFlow,
+	"GetBKFundFlowList":          GroupMoneyFlow,
+	"GetBKFundFlowListByDate":    GroupMoneyFlow,
 
 	"QueryStockNewsTool":          GroupNewsResearch,
 	"GetNewsListData":             GroupNewsResearch,
@@ -161,12 +170,13 @@ var toolGroupMap = map[string]ToolGroup{
 	"GetAIAnalysisDetail":  GroupAIAnalysis,
 	"GetAIAnalysisContent": GroupAIAnalysis,
 
-	"SetTradingPrice":     GroupOperations,
-	"SendDingDingMessage": GroupOperations,
-	"SendToDingDing":      GroupOperations,
-	"SearchFund":          GroupOperations,
-	"GetFundInfo":         GroupOperations,
-	"GetEconomicData":     GroupOperations,
+	"SetTradingPrice":          GroupOperations,
+	"SetFollowedStockPosition": GroupOperations,
+	"SendDingDingMessage":      GroupOperations,
+	"SendToDingDing":           GroupOperations,
+	"SearchFund":               GroupOperations,
+	"GetFundInfo":              GroupOperations,
+	"GetEconomicData":          GroupOperations,
 }
 
 type groupKeywords struct {

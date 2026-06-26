@@ -1,0 +1,4 @@
+interface:
+  display_name: "盘后总结图片"
+  short_description: "用 go-stock CLI 行情数据生成A股盘后复盘长图"
+  default_prompt: "Use $after-hours-summary to generate an A-share after-hours summary image from local market data queried through go-stock-cli."

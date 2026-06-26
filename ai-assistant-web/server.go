@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"go-stock/backend/appdata"
 	"go-stock/backend/data"
 	"go-stock/backend/db"
 	"go-stock/backend/logger"
@@ -48,12 +49,17 @@ type shareRequest struct {
 
 // Start 在当前进程内启动 ai-assistant-web 服务（阻塞，适合放在 goroutine 中）。
 func Start() error {
-	checkDir("data")
-	checkDir("logs")
+	paths, migration, err := appdata.Prepare()
+	if err != nil {
+		return err
+	}
+	if migration.Migrated {
+		logger.SugaredLogger.Infof("migrated legacy database from %s to %s: %v", migration.SourceDir, migration.TargetDir, migration.Files)
+	}
 
 	// 当作为 go-stock 子组件启动时，db 可能已经初始化过。
 	if db.Dao == nil {
-		db.Init("")
+		db.Init(paths.DBPath)
 	}
 	autoMigrate()
 	data.InitAnalyzeSentiment()
@@ -340,13 +346,6 @@ func getAddr() string {
 		addr = ":18888"
 	}
 	return addr
-}
-
-func checkDir(dir string) {
-	_, err := os.Stat(dir)
-	if os.IsNotExist(err) {
-		_ = os.Mkdir(dir, os.ModePerm)
-	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

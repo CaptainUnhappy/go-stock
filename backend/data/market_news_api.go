@@ -914,9 +914,19 @@ func (m MarketNewsApi) StockNotice(stock_list string) []any {
 	if err != nil {
 		return []any{}
 	}
-	json.Unmarshal(resp.Body(), &respMap)
+	if err := json.Unmarshal(resp.Body(), &respMap); err != nil {
+		return []any{}
+	}
+	dataMap, ok := respMap["data"].(map[string]any)
+	if !ok {
+		return []any{}
+	}
+	list, ok := dataMap["list"].([]any)
+	if !ok {
+		return []any{}
+	}
 	//logger.SugaredLogger.Infof("resp:%+v", respMap["data"])
-	return (respMap["data"].(map[string]any))["list"].([]any)
+	return list
 }
 
 func (m MarketNewsApi) EMDictCode(code string, cache *freecache.Cache) []any {
