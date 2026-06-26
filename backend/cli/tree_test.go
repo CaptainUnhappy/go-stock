@@ -84,6 +84,7 @@ func TestRunnerRegistersExecutableCommands(t *testing.T) {
 		"market money-flow concept latest",
 		"portfolio list",
 		"portfolio position set",
+		"portfolio group rename",
 		"fund ranking",
 		"kline show",
 		"tool list",

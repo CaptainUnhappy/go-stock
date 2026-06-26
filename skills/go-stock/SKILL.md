@@ -28,6 +28,7 @@ description: Use when an agent needs to work with local go-stock financial data 
 .\scripts\go-stock-cli.ps1 market money-flow stock --sort r0_net --limit 20
 .\scripts\go-stock-cli.ps1 kline show --stock-code 002335 --k-line-type day --limit 120
 .\scripts\go-stock-cli.ps1 portfolio list
+.\scripts\go-stock-cli.ps1 portfolio group rename --group-id 1 --new-name 短线观察
 .\scripts\go-stock-cli.ps1 portfolio position set --stock-code 600237 --cost-price 12.56 --volume 300
 .\scripts\go-stock-cli.ps1 fund ranking --page-size 20
 .\scripts\go-stock-cli.ps1 tool list
@@ -69,6 +70,7 @@ skills/go-stock/references/tool-catalog.md
 - 个股分析优先：`portfolio view detail` -> `portfolio view daily-k`/`kline show` -> `portfolio view money` -> `portfolio view notice`/`portfolio view report`。
 - 资金流按 GUI 对齐：个股资金 9 标签用 `market money-flow stock` 的 `sort` 参数；板块资金用 `market money-flow bk ...`；概念资金用 `market money-flow concept ...`。
 - 基金使用 `fund follow` 和 `fund ranking`；基金搜索、详情、K线、净值、持仓分别用 `fund search/info/kline/nav/holdings`。
+- 用户明确要管理自选分组时，用 `portfolio group list/add/rename/assign/remove`；重命名分组用 `portfolio group rename --group-id <ID> --new-name <新名称>`。
 - 用户给持仓并要求 Agent 设置提醒时，使用 `portfolio position set`，先生成预览，用户二次确认后再带确认令牌写入。
 - `MCP服务` 和 `名站优选` 不属于新 CLI 主功能树。
 

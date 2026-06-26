@@ -41,6 +41,7 @@ func RenderHelp() string {
 	b.WriteString(".\\scripts\\go-stock-cli.ps1 market money-flow stock --sort r0_net --limit 20\n")
 	b.WriteString(".\\scripts\\go-stock-cli.ps1 kline show --stock-code 002335 --k-line-type day --limit 120\n")
 	b.WriteString(".\\scripts\\go-stock-cli.ps1 portfolio list\n")
+	b.WriteString(".\\scripts\\go-stock-cli.ps1 portfolio group rename --group-id 1 --new-name 短线观察\n")
 	b.WriteString(".\\scripts\\go-stock-cli.ps1 portfolio position set --stock-code 600237 --cost-price 12.56 --volume 300\n")
 	b.WriteString(".\\scripts\\go-stock-cli.ps1 fund ranking --page-size 20\n")
 	b.WriteString(".\\scripts\\go-stock-cli.ps1 tool list\n")
@@ -118,6 +119,7 @@ func portfolioTree() TreeNode {
 		{Label: "分组管理", Children: []TreeNode{
 			{Label: "查看分组", Path: "portfolio group list"},
 			{Label: "添加分组", Path: "portfolio group add"},
+			{Label: "重命名分组", Path: "portfolio group rename"},
 			{Label: "设置分组", Path: "portfolio group assign"},
 			{Label: "移出分组", Path: "portfolio group remove"},
 		}},

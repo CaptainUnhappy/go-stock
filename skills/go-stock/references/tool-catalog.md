@@ -25,7 +25,7 @@ go-stock
 ├─ 股票自选
 │  ├─ portfolio list/search/add/remove
 │  ├─ portfolio position get/set
-│  ├─ portfolio group list/add/assign/remove
+│  ├─ portfolio group list/add/rename/assign/remove
 │  └─ portfolio view minute/daily-k/multi-k/money/detail/notice/report
 ├─ 市场行情
 │  ├─ market news
@@ -278,6 +278,18 @@ go-stock
 | 命令 | 作用 | 适合什么时候用 | 常见输入提示 |
 |---|---|---|---|
 | `portfolio position set` | 设置本地自选股持仓和提醒字段：成本价、持仓数量、开仓价、止盈价、止损价、涨跌提醒、股价提醒、排序。第一次调用只生成预览和 `confirmToken`，不会写入；第二次必须带确认 token 才写入。 | 用户把持仓告诉 Agent，希望 Agent 自动设置成本和提醒；Agent 可自行判断止损、止盈、涨跌提醒，但需要二次确认。 | 必填：`stockCode`, `costPrice`, `volume`。常用可选：`stockName`, `entryPrice`, `takeProfitPrice`, `stopLossPrice`, `alarmChangePercent`, `alarmPrice`, `sort`, `reason`, `confirm`, `confirmToken`。 |
+
+## CLI 自选分组命令
+
+这些命令对齐 GUI 的“股票自选 > 分组管理”。只在用户明确要求管理自选分组时使用。
+
+| 命令 | 作用 | 适合什么时候用 | 常见输入提示 |
+|---|---|---|---|
+| `portfolio group list` | 查看当前自选分组 ID、名称、排序。 | 需要确认分组 ID，或用户问有哪些自选分组。 | 无参数。 |
+| `portfolio group add` | 新增自选分组。 | 用户要求创建观察池、短线、长线、基金替代等分组。 | `name`: 分组名称；`sort`: 可选排序。 |
+| `portfolio group rename` | 修改已有分组名称。 | 远程 GUI 新增的“分组名称修改”能力；用户要求把某个分组改名。 | `groupId`: 分组 ID；`name` 或 `newName`: 新名称。 |
+| `portfolio group assign` | 把股票加入指定分组。 | 用户要求把某只自选股归入某个分组。 | `groupId`: 分组 ID；`stockCode`: 股票代码。 |
+| `portfolio group remove` | 从指定分组移出股票。 | 用户要求把某只股票从某个分组移出。 | `groupId`: 分组 ID；`stockCode`: 股票代码；`stockName`: 可选。 |
 
 推荐流程：
 

@@ -29,6 +29,7 @@ func commandDefinitions() []Command {
 		write("portfolio position set", "设置持仓提醒", r.call("SetFollowedStockPosition", nil)),
 		read("portfolio group list", "查看分组", runPortfolioGroupList),
 		write("portfolio group add", "添加分组", runPortfolioGroupAdd),
+		write("portfolio group rename", "重命名分组", runPortfolioGroupRename),
 		write("portfolio group assign", "股票加入分组", runPortfolioGroupAssign),
 		write("portfolio group remove", "股票移出分组", runPortfolioGroupRemove),
 		read("portfolio view minute", "查看分时", r.call("GetStockMinuteData", mapArgs("code", "stockCode"))),
@@ -539,6 +540,8 @@ func normalizeCommonArgs(args map[string]any) {
 		"fund_code":            "fundCode",
 		"group-id":             "groupId",
 		"group_id":             "groupId",
+		"new-name":             "newName",
+		"new_name":             "newName",
 		"top-n":                "topN",
 		"top_n":                "topN",
 		"page-size":            "pageSize",
@@ -682,6 +685,22 @@ func runPortfolioGroupAdd(_ context.Context, args map[string]any) (string, error
 		return "添加分组成功", nil
 	}
 	return "添加分组失败", nil
+}
+
+func runPortfolioGroupRename(_ context.Context, args map[string]any) (string, error) {
+	normalizeCommonArgs(args)
+	groupID := optionalInt(args, "groupId", 0)
+	if groupID <= 0 {
+		return "", fmt.Errorf("groupId must be greater than 0")
+	}
+	name, err := requiredString(args, "name", "newName")
+	if err != nil {
+		return "", err
+	}
+	if data.NewStockGroupApi(db.Dao).UpdateGroup(groupID, name) {
+		return "修改分组成功", nil
+	}
+	return "修改分组失败", nil
 }
 
 func runPortfolioGroupAssign(_ context.Context, args map[string]any) (string, error) {

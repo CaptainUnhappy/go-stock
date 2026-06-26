@@ -154,6 +154,7 @@ func normalizeArgKey(key string) string {
 		"stock-name":           "stockName",
 		"fund-code":            "fundCode",
 		"group-id":             "groupId",
+		"new-name":             "newName",
 		"top-n":                "topN",
 		"page-index":           "pageIndex",
 		"page-size":            "pageSize",

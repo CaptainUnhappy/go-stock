@@ -37,6 +37,7 @@ go run ./cmd/go-stock-cli market major-index --name 上证指数
 go run ./cmd/go-stock-cli market industry-rank concept-money --sort netamount --limit 20
 go run ./cmd/go-stock-cli market money-flow stock --sort r0_net --limit 20
 go run ./cmd/go-stock-cli portfolio list
+go run ./cmd/go-stock-cli portfolio group rename --group-id 1 --new-name 短线观察
 go run ./cmd/go-stock-cli portfolio position set --stock-code 600237 --cost-price 12.56 --volume 300
 go run ./cmd/go-stock-cli fund ranking --page-size 20
 go run ./cmd/go-stock-cli kline show --stock-code 002335 --k-line-type day --limit 120
@@ -74,6 +75,16 @@ go run ./cmd/go-stock-cli portfolio position set --stock-code 600237 --cost-pric
 ```
 
 持仓、成本、数量、止损、止盈、涨跌提醒、股价提醒必须走预览/确认令牌流程。原写入/通知/配置工具不会作为 raw `tool <name>` 入口开放。
+
+分组管理命令用于对齐 GUI 的自选分组能力：
+
+```powershell
+go run ./cmd/go-stock-cli portfolio group list
+go run ./cmd/go-stock-cli portfolio group add --name 短线观察 --sort 1
+go run ./cmd/go-stock-cli portfolio group rename --group-id 1 --new-name 趋势观察
+go run ./cmd/go-stock-cli portfolio group assign --group-id 1 --stock-code 600237
+go run ./cmd/go-stock-cli portfolio group remove --group-id 1 --stock-code 600237
+```
 
 默认禁用的 raw 工具包括：
 
