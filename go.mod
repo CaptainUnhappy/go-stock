@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/PuerkitoBio/goquery v1.12.0
-	github.com/bensema/gotdx v0.0.0-20260618125248-c7d001f2384e
+	github.com/bensema/gotdx v0.0.0-20260623084845-957640139dfe
 	github.com/bytedance/sonic v1.15.2
 	github.com/chromedp/cdproto v0.0.0-20260427013145-5737772c319b
 	github.com/chromedp/chromedp v0.15.1

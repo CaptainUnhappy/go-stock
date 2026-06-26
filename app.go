@@ -902,6 +902,8 @@ func (a *App) CheckStockBaseInfo(ctx context.Context) {
 	if err != nil {
 		logger.SugaredLogger.Errorf("保存StockBasic股票基础信息失败:%s", err.Error())
 	}
+	// 全量覆盖完成后，用通达信即时数据对 A 股做增量校准（新股上市当天即可见）
+	go a.syncStockBasicFromTdx()
 
 	//count := int64(0)
 	//db.Dao.Model(&data.StockBasic{}).Count(&count)
@@ -961,6 +963,8 @@ func (a *App) CheckStockBaseInfo(ctx context.Context) {
 	if err != nil {
 		logger.SugaredLogger.Errorf("保存StockInfoUS股票基础信息失败:%s", err.Error())
 	}
+	// 港股/美股全量覆盖完成后，用通达信扩展行情即时数据做增量校准
+	go a.syncHKUSStockBasicFromTdx()
 	//for _, stock := range *stockUSBasics {
 	//	stockInfo := &models.StockInfoUS{
 	//		Code:   stock.Code,
@@ -976,6 +980,31 @@ func (a *App) CheckStockBaseInfo(ctx context.Context) {
 	//	}
 	//}
 
+}
+
+// syncStockBasicFromTdx 用通达信即时数据对 A 股基础信息做增量校准。
+// 在 CheckStockBaseInfo 全量覆盖之后调用：通达信本地证券列表新股上市当天即可见，
+// 以 upsert 方式补充全量 JSON 未及时覆盖的新上市/改名/退市股票。
+func (a *App) syncStockBasicFromTdx() {
+	defer PanicHandler()
+	added, updated, err := data.NewTdxKLineApi().SyncStockBasicToDB()
+	if err != nil {
+		logger.SugaredLogger.Warnf("通达信同步股票基础信息失败:%s", err.Error())
+		return
+	}
+	logger.SugaredLogger.Infof("通达信同步股票基础信息完成：新增 %d 条，更新 %d 条", added, updated)
+}
+
+// syncHKUSStockBasicFromTdx 用通达信扩展行情即时数据对港股/美股基础信息做增量校准。
+func (a *App) syncHKUSStockBasicFromTdx() {
+	defer PanicHandler()
+	hkAdded, hkUpdated, usAdded, usUpdated, err := data.NewTdxKLineApi().SyncHKUSStockBasicToDB()
+	if err != nil {
+		logger.SugaredLogger.Warnf("通达信同步港美股基础信息失败:%s", err.Error())
+		return
+	}
+	logger.SugaredLogger.Infof("通达信同步港美股基础信息完成：港股新增 %d 更新 %d，美股新增 %d 更新 %d",
+		hkAdded, hkUpdated, usAdded, usUpdated)
 }
 func (a *App) NewsPush(news *[]models.Telegraph) {
 
@@ -2179,6 +2208,15 @@ func (a *App) UpdateGroupSort(id int, newSort int) bool {
 	return data.NewStockGroupApi(db.Dao).UpdateGroupSort(id, newSort)
 }
 
+// UpdateGroup 修改分组名称
+func (a *App) UpdateGroup(id int, name string) string {
+	ok := data.NewStockGroupApi(db.Dao).UpdateGroup(id, name)
+	if ok {
+		return "修改成功"
+	}
+	return "修改失败"
+}
+
 func (a *App) InitializeGroupSort() bool {
 	return data.NewStockGroupApi(db.Dao).InitializeGroupSort()
 }
@@ -2215,6 +2253,13 @@ func (a *App) RemoveGroup(groupId int) string {
 }
 
 func (a *App) GetStockKLine(stockCode, stockName string, days int64) *[]data.KLineData {
+	// 港股优先使用 gotdx (通达信 ExKLine2) 获取日K线，失败再降级到腾讯接口
+	if data.IsHKStockCode(stockCode) {
+		tdxData := data.NewTdxKLineApi().GetMACKLineData(stockCode, "101", int(days))
+		if tdxData != nil && len(*tdxData) > 0 {
+			return tdxData
+		}
+	}
 	return data.NewStockDataApi().GetHK_KLineData(stockCode, "day", days)
 }
 

@@ -113,8 +113,8 @@ github.com/aws/smithy-go v1.27.2/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqx
 github.com/bahlo/generic-list-go v0.2.0 h1:5sz/EEAK+ls5wF+NeqDpk5+iNdMDXrh3z3nPnH1Wvgk=
 github.com/bahlo/generic-list-go v0.2.0/go.mod h1:2KvAjgMlE5NNynlg/5iLrrCCZ2+5xWbdbCW3pNTGyYg=
 github.com/benbjohnson/clock v1.1.0/go.mod h1:J11/hYXuz8f4ySSvYwY0FKfm+ezbsZBKZxNJlLklBHA=
-github.com/bensema/gotdx v0.0.0-20260618125248-c7d001f2384e h1:KbWOt0fSPA7Crv55OyjZKM5jUC5aWLXE+ZY3dE/yzAY=
-github.com/bensema/gotdx v0.0.0-20260618125248-c7d001f2384e/go.mod h1:sJBiXDKX4zHEkZGuNWrJdFniEukKvoCeYnv/BJWBN74=
+github.com/bensema/gotdx v0.0.0-20260623084845-957640139dfe h1:Gv4w1owxm1Ha3dp2KGldXLvvVs8f5C0mXup6amNXp9s=
+github.com/bensema/gotdx v0.0.0-20260623084845-957640139dfe/go.mod h1:sJBiXDKX4zHEkZGuNWrJdFniEukKvoCeYnv/BJWBN74=
 github.com/beorn7/perks v0.0.0-20180321164747-3a771d992973/go.mod h1:Dwedo/Wpr24TaqPxmxbtue+5NUziq4I4S80YR8gNf3Q=
 github.com/beorn7/perks v1.0.0/go.mod h1:KWe93zE9D1o94FZ5RNwFwVgaQK1VOXiVxmqh+CedLV8=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=

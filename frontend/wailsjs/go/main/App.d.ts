@@ -388,6 +388,8 @@ export function UpdateConfig(arg1:data.SettingConfig):Promise<string>;
 
 export function UpdateCronTask(arg1:models.CronTask):Promise<string>;
 
+export function UpdateGroup(arg1:number,arg2:string):Promise<string>;
+
 export function UpdateGroupSort(arg1:number,arg2:number):Promise<boolean>;
 
 export function UpdateMCPServer(arg1:models.MCPServer):Promise<string>;
