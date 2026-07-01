@@ -222,6 +222,10 @@ func normalizeArgKey(key string) string {
 		"k_line_type":          "kLineType",
 		"ma-periods":           "maPeriods",
 		"ma_periods":           "maPeriods",
+		"adjust":               "adjustFlag",
+		"adjust-flag":          "adjustFlag",
+		"adjust_flag":          "adjustFlag",
+		"adjustflag":           "adjustFlag",
 	}
 	if v, ok := replacements[key]; ok {
 		return v
@@ -247,17 +251,21 @@ func appendBareArgValue(args map[string]any, key string, value string) bool {
 	if key != "stockCode" && key != "stockCodes" {
 		return false
 	}
-	value = strings.TrimSpace(value)
+	value = cleanBareStockCodeToken(value)
 	if !looksLikeSecurityCode(value) {
 		return false
 	}
-	current := strings.TrimSpace(fmt.Sprint(args[key]))
+	current := cleanBareStockCodeToken(fmt.Sprint(args[key]))
 	if current == "" {
 		args[key] = value
 	} else {
 		args[key] = current + "," + value
 	}
 	return true
+}
+
+func cleanBareStockCodeToken(value string) string {
+	return strings.Trim(strings.TrimSpace(value), ",，;；")
 }
 
 func looksLikeSecurityCode(value string) bool {

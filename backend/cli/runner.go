@@ -60,10 +60,10 @@ func commandDefinitions() []Command {
 		read("market stock-report", "个股研报", r.call("GetStockResearchReport", nil)),
 		read("market announcement", "公司公告", r.call("GetStockNotice", nil)),
 		read("market industry-research", "行业研究", r.call("IndustryResearch", nil)),
-		read("market hot global", "当前热门-全球", r.call("GetGlobalMarketStatus", nil)),
-		read("market hot cn", "当前热门-沪深", r.call("GetMarketData", nil)),
-		read("market hot hk", "当前热门-港股", r.call("GlobalStockIndexesReadable", nil)),
-		read("market hot us", "当前热门-美股", r.call("GlobalStockIndexesReadable", nil)),
+		read("market hot global", "当前热门-全球", r.call("GetHotStockList", withDefaults(nil, map[string]any{"marketType": "10", "size": 20}))),
+		read("market hot cn", "当前热门-沪深", r.call("GetHotStockList", withDefaults(nil, map[string]any{"marketType": "12", "size": 20}))),
+		read("market hot hk", "当前热门-港股", r.call("GetHotStockList", withDefaults(nil, map[string]any{"marketType": "13", "size": 20}))),
+		read("market hot us", "当前热门-美股", r.call("GetHotStockList", withDefaults(nil, map[string]any{"marketType": "11", "size": 20}))),
 		read("market hot topic", "当前热门-热门话题", runHotTopic),
 		read("market hot timeline", "当前热门-重大事件时间轴", r.call("GetHotEventList", nil)),
 		read("market hot calendar", "当前热门-财经日历", r.call("GetGlobalMarketStatus", nil)),
@@ -71,6 +71,7 @@ func commandDefinitions() []Command {
 		read("kline search", "K线标的搜索", r.call("QueryStockCodeInfo", mapArgs("keyword", "searchWord"))),
 		read("kline recent", "K线最近查看", runKlineRecent),
 		read("kline show", "K线展示", runKlineShow(r)),
+		read("kline signals", "K线指标信号汇总", runKlineSignals(r)),
 
 		read("fund follow", "基金自选", runFundFollow),
 		read("fund ranking", "基金排行", runFundRanking),
@@ -434,6 +435,11 @@ func (r *toolRunner) runRawToolInfo(_ context.Context, args map[string]any) (str
 	b.WriteString("```json\n")
 	b.WriteString(rawToolSchemaJSON(entry.Info))
 	b.WriteString("\n```\n")
+	if aliases := rawToolCLIParamAliases(entry.Name); aliases != "" {
+		b.WriteString("\n## CLI 参数名\n\n")
+		b.WriteString(aliases)
+		b.WriteString("\n")
+	}
 	if hints := rawToolCLIHints(entry.Name); hints != "" {
 		b.WriteString("\n## CLI 调用提示\n\n")
 		b.WriteString(hints)
@@ -521,18 +527,24 @@ func rawToolCLIHints(name string) string {
 	case "GetStockInfo":
 		hints = append(hints,
 			"- 推荐盯盘优先调用：`tool GetStockInfo --stock-code sz002335`；该工具包含实时行情和五档盘口概览。",
+			"- PowerShell 多股示例：`.\\scripts\\go-stock-cli.ps1 tool GetStockInfo --stock-code \"sz300308,sz300502\"`。",
 			"- `stockCode` 可用 `--stockCode`、`--stock-code`、`--stock_code` 或 `--args-json '{\"stockCode\":\"sz002335\"}'` 传入。",
 		)
 	case "GetStockOrderBook":
 		hints = append(hints,
 			"- 该工具专查五档盘口；若数据源返回空，CLI 会自动尝试用 `GetStockInfo` 兜底。",
 			"- 盯盘优先使用 `tool GetStockInfo`；需要单独盘口字段时再调用本工具。",
+			"- PowerShell 多股示例：`.\\scripts\\go-stock-cli.ps1 tool GetStockOrderBook --stock-code \"sz300308,sz300502\"`。",
 			"- `stockCode` 可用 `--stockCode`、`--stock-code`、`--stock_code` 或 `--args-json '{\"stockCode\":\"sz002335\"}'` 传入。",
 		)
 	case "GetStockLatestFinance":
 		hints = append(hints,
 			"- CLI 已对多股票输入做逐只拆分，避免底层单股接口把多代码合并或 panic。",
 			"- PowerShell 中多股票建议写成 `--stockCode='sz002335,sz002506'`，或使用 `--args-json`。",
+		)
+	case "GetEastMoneyKLine", "GetEastMoneyKLineWithMA":
+		hints = append(hints,
+			"- 复权参数可用 `--adjust qfq`、`--adjust hfq`、`--adjust none`，也兼容原字段 `--adjust-flag`。",
 		)
 	}
 	if hasStockCodeLikeInput(name) {
@@ -544,9 +556,34 @@ func rawToolCLIHints(name string) string {
 	return strings.Join(hints, "\n")
 }
 
+func rawToolCLIParamAliases(name string) string {
+	if !hasStockCodeLikeInput(name) && !hasAdjustFlagInput(name) {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("| JSON Schema 字段 | 推荐 CLI 参数 | 兼容 CLI 参数 |\n")
+	b.WriteString("| --- | --- | --- |\n")
+	if hasStockCodeLikeInput(name) {
+		b.WriteString("| `stockCode` | `--stock-code` | `--stockCode`, `--stock_code`, `--stockcode`, `--args-json '{\"stockCode\":\"...\"}'` |\n")
+	}
+	if hasAdjustFlagInput(name) {
+		b.WriteString("| `adjustFlag` | `--adjust` | `--adjust-flag`, `--adjustFlag`, `--adjust_flag`, `--args-json '{\"adjustFlag\":\"qfq\"}'` |\n")
+	}
+	return b.String()
+}
+
 func hasStockCodeLikeInput(name string) bool {
 	switch name {
 	case "GetStockInfo", "GetStockOrderBook", "GetStockLatestFinance", "GetStockConceptInfo", "GetEastMoneyKLine", "GetEastMoneyKLineWithMA", "GetStockKLine":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasAdjustFlagInput(name string) bool {
+	switch name {
+	case "GetEastMoneyKLine", "GetEastMoneyKLineWithMA", "GetStockKLine":
 		return true
 	default:
 		return false
@@ -670,6 +707,10 @@ func normalizeCommonArgs(args map[string]any) {
 		"k_line_type":          "kLineType",
 		"ma-periods":           "maPeriods",
 		"ma_periods":           "maPeriods",
+		"adjust":               "adjustFlag",
+		"adjust-flag":          "adjustFlag",
+		"adjust_flag":          "adjustFlag",
+		"adjustflag":           "adjustFlag",
 	}
 	for from, to := range aliases {
 		if v, ok := args[from]; ok {
@@ -1050,8 +1091,14 @@ func runKlineShow(r *toolRunner) Handler {
 		}
 		mapped := cloneArgs(args)
 		mapped["stockCode"] = code
-		mapped["kLineType"] = optionalString(args, "kLineType", optionalString(args, "period", "day"))
+		kLineType := optionalString(args, "kLineType", optionalString(args, "period", "day"))
+		adjustFlag, err := kLineAdjustFlag(args, kLineType)
+		if err != nil {
+			return "", err
+		}
+		mapped["kLineType"] = kLineType
 		mapped["limit"] = optionalInt(args, "limit", 120)
+		mapped["adjustFlag"] = adjustFlag
 		if _, ok := mapped["maPeriods"]; !ok {
 			mapped["maPeriods"] = "5,10,20,60,120"
 		}
@@ -1067,8 +1114,224 @@ func runKlineShow(r *toolRunner) Handler {
 			out += "\n\n## 价位线\n\n"
 			out += fmt.Sprintf("- 开仓价：%v\n- 止损价：%v\n- 止盈价：%v\n", args["entryPrice"], args["stopLossPrice"], args["takeProfitPrice"])
 		}
+		if summary, ok := buildKLineSummary(code, fmt.Sprint(mapped["kLineType"]), fmt.Sprint(mapped["maPeriods"]), optionalInt(args, "limit", 120), adjustFlag); ok {
+			out += "\n\n" + summary
+		}
 		return out, nil
 	}
+}
+
+func buildKLineSummary(code, kLineType, maPeriods string, limit int, adjustFlag string) (string, bool) {
+	periods := parseKLineSummaryPeriods(maPeriods)
+	if len(periods) == 0 {
+		periods = []int{5, 10, 20, 60}
+	}
+	fetchLimit := kLineSummaryFetchLimit(limit, periods)
+	result := data.FetchKLineWithFallback(code, "", data.NormalizeKLineType(kLineType), fetchLimit, "", adjustFlag)
+	if result.Data == nil || len(*result.Data) == 0 {
+		return "", false
+	}
+	list := *result.Data
+	latest := list[len(list)-1]
+	current, ok := parseKLineFloat(latest.Close)
+	if !ok || current <= 0 {
+		return "", false
+	}
+	var b strings.Builder
+	b.WriteString("## K线摘要\n\n")
+	b.WriteString(fmt.Sprintf("- 最新收盘价：%.2f（%s）\n", current, cliValueOrDash(latest.Day)))
+	for _, period := range periods {
+		ma, ok := averageClose(list, period)
+		if !ok || period > 60 {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("- MA%d：%.2f，当前价%s MA%d %.2f%%\n", period, ma, priceRelation(current, ma), period, percentDistance(current, ma)))
+	}
+	if pct, ok := kLineReturnPercent(list, 5); ok {
+		b.WriteString(fmt.Sprintf("- 近5根涨幅：%.2f%%\n", pct))
+	}
+	if pct, ok := kLineReturnPercent(list, 20); ok {
+		b.WriteString(fmt.Sprintf("- 近20根涨幅：%.2f%%\n", pct))
+	}
+	if text, ok := kLineVolumeSummary(list); ok {
+		b.WriteString("- 量能：" + text + "\n")
+	}
+	if strings.TrimSpace(result.Source) != "" {
+		b.WriteString("- 摘要数据源：" + result.Source + "\n")
+	}
+	if adjustFlag != "" {
+		b.WriteString("- 复权：" + kLineAdjustLabel(adjustFlag) + "\n")
+	}
+	return strings.TrimSpace(b.String()), true
+}
+
+func kLineAdjustFlag(args map[string]any, kLineType string) (string, error) {
+	raw := strings.ToLower(strings.TrimSpace(optionalString(args, "adjustFlag", "")))
+	kType := data.NormalizeKLineType(kLineType)
+	if raw == "" {
+		if isDailyLikeKLineType(kType) {
+			return "qfq", nil
+		}
+		return "", nil
+	}
+	switch raw {
+	case "qfq", "hfq", "none", "0":
+		if isDailyLikeKLineType(kType) {
+			return raw, nil
+		}
+		return "", nil
+	default:
+		return "", fmt.Errorf("adjust must be one of: qfq, hfq, none")
+	}
+}
+
+func isDailyLikeKLineType(kType string) bool {
+	switch data.NormalizeKLineType(kType) {
+	case "101", "102", "103", "104", "106":
+		return true
+	default:
+		return false
+	}
+}
+
+func kLineAdjustLabel(adjustFlag string) string {
+	switch strings.ToLower(strings.TrimSpace(adjustFlag)) {
+	case "qfq":
+		return "前复权(qfq)"
+	case "hfq":
+		return "后复权(hfq)"
+	case "none", "0":
+		return "不复权(none)"
+	default:
+		return adjustFlag
+	}
+}
+
+func parseKLineSummaryPeriods(value string) []int {
+	var periods []int
+	for _, part := range strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == '，' || r == ';' || r == '；' || r == ' ' || r == '\t' || r == '\n'
+	}) {
+		n, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(strings.ToUpper(part), "MA")))
+		if err == nil && n > 0 {
+			periods = append(periods, n)
+		}
+	}
+	return periods
+}
+
+func kLineSummaryFetchLimit(limit int, periods []int) int {
+	if limit < 80 {
+		limit = 80
+	}
+	for _, period := range periods {
+		if period+20 > limit {
+			limit = period + 20
+		}
+	}
+	return limit
+}
+
+func averageClose(list []data.KLineData, period int) (float64, bool) {
+	if period <= 0 || len(list) < period {
+		return 0, false
+	}
+	start := len(list) - period
+	var sum float64
+	for _, item := range list[start:] {
+		value, ok := parseKLineFloat(item.Close)
+		if !ok {
+			return 0, false
+		}
+		sum += value
+	}
+	return sum / float64(period), true
+}
+
+func kLineReturnPercent(list []data.KLineData, bars int) (float64, bool) {
+	if bars <= 0 || len(list) <= bars {
+		return 0, false
+	}
+	latest, ok := parseKLineFloat(list[len(list)-1].Close)
+	if !ok || latest <= 0 {
+		return 0, false
+	}
+	base, ok := parseKLineFloat(list[len(list)-1-bars].Close)
+	if !ok || base <= 0 {
+		return 0, false
+	}
+	return (latest - base) / base * 100, true
+}
+
+func kLineVolumeSummary(list []data.KLineData) (string, bool) {
+	if len(list) < 2 {
+		return "", false
+	}
+	latest, ok := parseKLineFloat(list[len(list)-1].Volume)
+	if !ok || latest <= 0 {
+		return "", false
+	}
+	count := 5
+	if len(list)-1 < count {
+		count = len(list) - 1
+	}
+	var sum float64
+	for _, item := range list[len(list)-1-count : len(list)-1] {
+		value, ok := parseKLineFloat(item.Volume)
+		if !ok {
+			return "", false
+		}
+		sum += value
+	}
+	avg := sum / float64(count)
+	if avg <= 0 {
+		return "", false
+	}
+	ratio := latest / avg
+	state := "接近前5根均量"
+	if ratio >= 1.2 {
+		state = "放量"
+	} else if ratio <= 0.8 {
+		state = "缩量"
+	}
+	return fmt.Sprintf("%s，最新成交量为前%d根均量的 %.2f 倍", state, count, ratio), true
+}
+
+func parseKLineFloat(value string) (float64, bool) {
+	value = strings.TrimSpace(strings.ReplaceAll(value, ",", ""))
+	if value == "" || value == "-" {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(value, 64)
+	return f, err == nil
+}
+
+func priceRelation(price, ma float64) string {
+	if ma <= 0 {
+		return "相对"
+	}
+	if price > ma {
+		return "高于"
+	}
+	if price < ma {
+		return "低于"
+	}
+	return "等于"
+}
+
+func percentDistance(price, base float64) float64 {
+	if base <= 0 {
+		return 0
+	}
+	return (price - base) / base * 100
+}
+
+func cliValueOrDash(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 func hasAny(args map[string]any, names ...string) bool {

@@ -145,6 +145,52 @@ func TestSetFollowedStockPositionConfirmWrites(t *testing.T) {
 	}
 }
 
+func TestSetFollowedStockPositionDefaultsSortToWatchList(t *testing.T) {
+	ensureFollowedStockPositionTestDB(t)
+	cleanupFollowedStockPosition(t, "sh688525")
+
+	input := followedStockPositionInput{
+		StockCode:          normalizeFollowedStockPositionCode("688525.SH"),
+		StockName:          "佰维存储",
+		CostPrice:          100.5,
+		Volume:             100,
+		EntryPrice:         100.5,
+		TakeProfitPrice:    110,
+		StopLossPrice:      95,
+		AlarmChangePercent: 5,
+		AlarmPrice:         99,
+		Reason:             "未传 sort 的关注标的默认放到观察尾部",
+	}
+	token := followedStockPositionConfirmToken(input)
+	args := fmt.Sprintf(`{
+		"stockCode":"688525.SH",
+		"stockName":"佰维存储",
+		"costPrice":100.5,
+		"volume":100,
+		"entryPrice":100.5,
+		"takeProfitPrice":110,
+		"stopLossPrice":95,
+		"alarmChangePercent":5,
+		"alarmPrice":99,
+		"reason":"未传 sort 的关注标的默认放到观察尾部",
+		"confirm":true,
+		"confirmToken":"%s"
+	}`, token)
+
+	tool := GetSetFollowedStockPositionTool()
+	if _, err := tool.InvokableRun(context.Background(), args); err != nil {
+		t.Fatalf("confirm failed: %v", err)
+	}
+
+	var stock data.FollowedStock
+	if err := db.Dao.Model(&data.FollowedStock{}).Where("stock_code = ?", "sh688525").First(&stock).Error; err != nil {
+		t.Fatalf("read followed stock failed: %v", err)
+	}
+	if stock.Sort != data.FollowedStockDefaultSort {
+		t.Fatalf("Sort = %d, want %d", stock.Sort, data.FollowedStockDefaultSort)
+	}
+}
+
 func TestGetFollowedStocksReturnsMarkdownTable(t *testing.T) {
 	ensureFollowedStockPositionTestDB(t)
 	cleanupFollowedStockPosition(t, "sh603690")

@@ -11,6 +11,7 @@ import (
 
 	"go-stock/backend/data"
 	"go-stock/backend/db"
+	"go-stock/backend/models"
 )
 
 var dataToolsTestDBOnce sync.Once
@@ -206,5 +207,26 @@ func TestIndustryRankToolsExposeFrontendSubTabs(t *testing.T) {
 	}
 	if got := payload.Properties["sort"].Enum; len(got) != 3 {
 		t.Fatalf("sort enum has %d values, want 3: %#v", len(got), got)
+	}
+}
+
+func TestFormatStockHistoryMoneyDataAddsReadableSummary(t *testing.T) {
+	rows := []models.StockMoneyDataHis{
+		{Date: "2026-06-20", F62: "-10000", F184: "-1.20", F2: "10.00", F3: "-1.00"},
+		{Date: "2026-06-23", F62: "20000", F184: "2.00", F2: "10.20", F3: "2.00"},
+		{Date: "2026-06-24", F62: "30000", F184: "3.00", F2: "10.30", F3: "0.98"},
+		{Date: "2026-06-25", F62: "40000", F184: "4.00", F2: "10.40", F3: "0.97"},
+	}
+	out := formatStockHistoryMoneyData("sz300308", rows, 2)
+	for _, want := range []string{
+		"历史资金流向摘要",
+		"近3日主力净额合计：9.00万",
+		"主力连续净流入天数：3",
+		"最近 2 条",
+		"主力净占比",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
 	}
 }

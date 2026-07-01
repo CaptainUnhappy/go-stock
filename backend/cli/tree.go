@@ -39,7 +39,8 @@ func RenderHelp() string {
 	b.WriteString(".\\scripts\\go-stock-cli.ps1 market major-index --name 上证指数\n")
 	b.WriteString(".\\scripts\\go-stock-cli.ps1 market industry-rank concept-money --sort netamount --limit 20\n")
 	b.WriteString(".\\scripts\\go-stock-cli.ps1 market money-flow stock --sort r0_net --limit 20\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 kline show --stock-code 002335 --k-line-type day --limit 120\n")
+	b.WriteString(".\\scripts\\go-stock-cli.ps1 kline show --stock-code 002335 --k-line-type day --adjust qfq --limit 120\n")
+	b.WriteString(".\\scripts\\go-stock-cli.ps1 kline signals --stock-code 002335 --k-line-type day --adjust qfq --limit 250\n")
 	b.WriteString(".\\scripts\\go-stock-cli.ps1 portfolio list\n")
 	b.WriteString(".\\scripts\\go-stock-cli.ps1 portfolio group rename --group-id 1 --new-name 短线观察\n")
 	b.WriteString(".\\scripts\\go-stock-cli.ps1 portfolio position set --stock-code 600237 --cost-price 12.56 --volume 300\n")
@@ -204,8 +205,13 @@ func klineTree() TreeNode {
 		}},
 		{Label: "K线展示", Path: "kline show", Children: []TreeNode{
 			{Label: "周期：1分/5分/15分/30分/60分/日K/周K/月K/季K/年K"},
+			{Label: "复权：qfq前复权/hfq后复权/none不复权"},
 			{Label: "指标：趋势/波动/动量/量价/强度"},
 			{Label: "价位线：开仓价/止损价/止盈价"},
+		}},
+		{Label: "指标信号汇总", Path: "kline signals", Children: []TreeNode{
+			{Label: "看多/看空/震荡/中性统计"},
+			{Label: "指标标签：MA/MACD/RSI/KDJ/BOLL 等"},
 		}},
 	}}
 }

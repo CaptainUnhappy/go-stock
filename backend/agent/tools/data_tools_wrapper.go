@@ -73,6 +73,14 @@ func stockValueOrDash(v string) string {
 	return v
 }
 
+func stockMetricOrDash(v string) string {
+	v = stockValueOrDash(v)
+	if v == "0" || v == "0.0" || v == "0.00" || v == "0.0000" {
+		return "-"
+	}
+	return v
+}
+
 func hasQuoteValue(values ...string) bool {
 	for _, value := range values {
 		v := strings.TrimSpace(value)
@@ -126,12 +134,156 @@ func formatStockInfoSection(s data.StockInfo) string {
 	}
 	b.WriteString(fmt.Sprintf("| 最高 | %s |\n", stockValueOrDash(s.High)))
 	b.WriteString(fmt.Sprintf("| 最低 | %s |\n", stockValueOrDash(s.Low)))
-	b.WriteString(fmt.Sprintf("| 成交量 | %s |\n", stockValueOrDash(s.Volume)))
-	b.WriteString(fmt.Sprintf("| 成交额 | %s |\n", stockValueOrDash(s.Amount)))
+	b.WriteString(fmt.Sprintf("| %s | %s |\n", stockMetricLabel("成交量", s.VolumeUnit), stockValueOrDash(s.Volume)))
+	b.WriteString(fmt.Sprintf("| %s | %s |\n", stockMetricLabel("成交额", s.AmountUnit), stockValueOrDash(s.Amount)))
+	b.WriteString(fmt.Sprintf("| 换手率 | %s |\n", stockMetricOrDash(s.TurnoverRate)))
+	b.WriteString(fmt.Sprintf("| 量比 | %s |\n", stockMetricOrDash(s.VolumeRatio)))
+	b.WriteString(fmt.Sprintf("| 市盈率 | %s |\n", stockMetricOrDash(s.PERatio)))
+	b.WriteString(fmt.Sprintf("| 市净率 | %s |\n", stockMetricOrDash(s.PBRatio)))
+	b.WriteString(fmt.Sprintf("| 总市值 | %s |\n", stockMetricOrDash(s.MarketValue)))
+	b.WriteString(fmt.Sprintf("| 流通市值 | %s |\n", stockMetricOrDash(s.CirculatingMarketValue)))
 	b.WriteString(fmt.Sprintf("| 更新时间 | %s %s |\n", stockValueOrDash(s.Date), stockValueOrDash(s.Time)))
 	b.WriteString("\n#### 五档盘口\n\n")
 	b.WriteString(formatStockOrderBookSection(s))
 	return b.String()
+}
+
+func stockMetricLabel(name, unit string) string {
+	unit = strings.TrimSpace(unit)
+	if unit == "" {
+		return name
+	}
+	return name + "(" + unit + ")"
+}
+
+type stockHistoryMoneyRow struct {
+	Date                string `md:"日期"`
+	LatestPrice         string `md:"最新价"`
+	ChangePercent       string `md:"涨跌幅"`
+	MainNetAmount       string `md:"主力净额"`
+	MainNetRatio        string `md:"主力净占比"`
+	SuperLargeNetAmount string `md:"超大单净额"`
+	LargeNetAmount      string `md:"大单净额"`
+	MiddleNetAmount     string `md:"中单净额"`
+	SmallNetAmount      string `md:"小单净额"`
+}
+
+func formatStockHistoryMoneyData(stockCode string, result []models.StockMoneyDataHis, limit int) string {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 60 {
+		limit = 60
+	}
+	start := len(result) - limit
+	if start < 0 {
+		start = 0
+	}
+	recent := result[start:]
+	rows := make([]stockHistoryMoneyRow, 0, len(recent))
+	for _, item := range recent {
+		rows = append(rows, stockHistoryMoneyRow{
+			Date:                item.Date,
+			LatestPrice:         stockValueOrDash(item.F2),
+			ChangePercent:       formatPercentLiteral(item.F3),
+			MainNetAmount:       formatYuanLiteral(item.F62),
+			MainNetRatio:        formatPercentLiteral(item.F184),
+			SuperLargeNetAmount: formatYuanLiteral(item.F66),
+			LargeNetAmount:      formatYuanLiteral(item.F72),
+			MiddleNetAmount:     formatYuanLiteral(item.F78),
+			SmallNetAmount:      formatYuanLiteral(item.F84),
+		})
+	}
+	var b strings.Builder
+	b.WriteString("## 股票")
+	b.WriteString(stockCode)
+	b.WriteString("历史资金流向摘要\n\n")
+	b.WriteString(stockHistoryMoneySummary(result))
+	b.WriteString("\n\n")
+	b.WriteString(util.MarkdownTableWithTitle("股票"+stockCode+"历史资金流向数据（最近 "+convertor.ToString(len(recent))+" 条）", rows))
+	return b.String()
+}
+
+func stockHistoryMoneySummary(result []models.StockMoneyDataHis) string {
+	if len(result) == 0 {
+		return "暂无历史资金流向数据。"
+	}
+	latest := result[len(result)-1]
+	return strings.Join([]string{
+		"- 最近交易日：" + stockValueOrDash(latest.Date),
+		"- 最近一日主力净额：" + formatYuanLiteral(latest.F62),
+		"- 最近一日主力净占比：" + formatPercentLiteral(latest.F184),
+		"- 近3日主力净额合计：" + formatYuanFloat(sumRecentMainNet(result, 3)),
+		"- 近5日主力净额合计：" + formatYuanFloat(sumRecentMainNet(result, 5)),
+		"- 近10日主力净额合计：" + formatYuanFloat(sumRecentMainNet(result, 10)),
+		"- 主力连续净流入天数：" + convertor.ToString(consecutiveMainInflowDays(result)),
+	}, "\n")
+}
+
+func sumRecentMainNet(result []models.StockMoneyDataHis, days int) float64 {
+	if days <= 0 {
+		return 0
+	}
+	start := len(result) - days
+	if start < 0 {
+		start = 0
+	}
+	var sum float64
+	for _, item := range result[start:] {
+		sum += parseFloatLiteral(item.F62)
+	}
+	return sum
+}
+
+func consecutiveMainInflowDays(result []models.StockMoneyDataHis) int {
+	days := 0
+	for i := len(result) - 1; i >= 0; i-- {
+		if parseFloatLiteral(result[i].F62) <= 0 {
+			break
+		}
+		days++
+	}
+	return days
+}
+
+func parseFloatLiteral(value string) float64 {
+	value = strings.TrimSpace(strings.TrimSuffix(value, "%"))
+	value = strings.ReplaceAll(value, ",", "")
+	f, _ := convertor.ToFloat(value)
+	return f
+}
+
+func formatYuanLiteral(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	return formatYuanFloat(parseFloatLiteral(value))
+}
+
+func formatYuanFloat(value float64) string {
+	abs := value
+	if abs < 0 {
+		abs = -abs
+	}
+	if abs >= 100000000 {
+		return fmt.Sprintf("%.2f亿", value/100000000)
+	}
+	if abs >= 10000 {
+		return fmt.Sprintf("%.2f万", value/10000)
+	}
+	return fmt.Sprintf("%.2f元", value)
+}
+
+func formatPercentLiteral(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	if strings.HasSuffix(value, "%") {
+		return value
+	}
+	return value + "%"
 }
 
 func normalizeSinaStockCode(stockCode string) string {
@@ -985,25 +1137,36 @@ func GetAllDataTools() []tool.BaseTool {
 				Desc:     "股票代码，如：601138.SH",
 				Required: true,
 			},
+			"limit": {
+				Type:     "integer",
+				Desc:     "返回最近历史条数，默认20。",
+				Required: false,
+			},
 		},
 		func(args string) (string, error) {
 			stockCode := gjson.Get(args, "stockCode").String()
+			limit := int(gjson.Get(args, "limit").Int())
+			if limit <= 0 {
+				limit = 20
+			}
 			result := data.NewStockDataApi().GetStockHistoryMoneyData(stockCode)
 			if len(result) == 0 {
 				sinaCode := normalizeSinaStockCode(stockCode)
 				trend := data.NewMarketNewsApi().GetStockMoneyTrendByDay(sinaCode, 120)
 				if len(trend) > 0 {
+					if limit > 0 && len(trend) > limit {
+						trend = trend[:limit]
+					}
 					raw, _ := json.Marshal(trend)
 					table, err := data.JSONToMarkdownTable(raw)
 					if err != nil {
 						table = string(raw)
 					}
-					return "## 股票" + stockCode + "历史资金流向数据（新浪兜底）\n\n" + table, nil
+					return "## 股票" + stockCode + "历史资金流向数据（新浪兜底，最近 " + convertor.ToString(len(trend)) + " 条）\n\n" + table, nil
 				}
 				return fmt.Sprintf("未获取到 %s 历史资金流向数据；已尝试东方财富历史资金接口和新浪资金趋势接口。请确认代码格式或稍后重试。", stockCode), nil
 			}
-			md := util.MarkdownTableWithTitle("股票"+stockCode+"历史资金流向数据", result)
-			return md, nil
+			return formatStockHistoryMoneyData(stockCode, result, limit), nil
 		},
 	))
 
@@ -1644,7 +1807,7 @@ func GetAllDataTools() []tool.BaseTool {
 				}
 				// A股优先使用 FetchKLineWithFallback（MAC→东方财富→新浪→腾讯→通达信）
 				if data.IsAStockCode(code) {
-					res := data.FetchKLineWithFallbackAsSection(code, kType, limit)
+					res := data.FetchKLineWithFallbackAsSection(code, kType, limit, adjustFlag)
 					results = append(results, res)
 				} else {
 					api := data.NewEastMoneyKLineApi(data.GetSettingConfig())
@@ -1685,9 +1848,15 @@ func GetAllDataTools() []tool.BaseTool {
 				Desc:     "均线周期，逗号分隔，如 5,10,20,60。不传则默认 5,10,20,60,120",
 				Required: false,
 			},
+			"adjustFlag": {
+				Type:     "string",
+				Desc:     "复权类型，仅日K及更长周期有效：qfq=前复权，hfq=后复权，none=不复权",
+				Required: false,
+			},
 		},
 		func(args string) (string, error) {
 			kLineType := gjson.Get(args, "kLineType").String()
+			adjustFlag := gjson.Get(args, "adjustFlag").String()
 			limit := int(gjson.Get(args, "limit").Int())
 			maPeriodsStr := gjson.Get(args, "maPeriods").String()
 			if limit <= 0 {
@@ -1705,7 +1874,7 @@ func GetAllDataTools() []tool.BaseTool {
 				}
 				// A股优先使用 FetchKLineWithFallback + 均线计算
 				if data.IsAStockCode(code) {
-					res := data.FetchKLineWithMASection(code, kType, limit, maPeriodsStr)
+					res := data.FetchKLineWithMASection(code, kType, limit, maPeriodsStr, adjustFlag)
 					results = append(results, res)
 				} else {
 					api := data.NewEastMoneyKLineApi(data.GetSettingConfig())

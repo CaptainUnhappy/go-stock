@@ -40,7 +40,8 @@ go run ./cmd/go-stock-cli portfolio list
 go run ./cmd/go-stock-cli portfolio group rename --group-id 1 --new-name 短线观察
 go run ./cmd/go-stock-cli portfolio position set --stock-code 600237 --cost-price 12.56 --volume 300
 go run ./cmd/go-stock-cli fund ranking --page-size 20
-go run ./cmd/go-stock-cli kline show --stock-code 002335 --k-line-type day --limit 120
+go run ./cmd/go-stock-cli kline show --stock-code 002335 --k-line-type day --adjust qfq --limit 120
+go run ./cmd/go-stock-cli kline signals --stock-code 002335 --k-line-type day --adjust qfq --limit 250
 ```
 
 `market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。
@@ -53,6 +54,7 @@ go run ./cmd/go-stock-cli kline show --stock-code 002335 --k-line-type day --lim
 go run ./cmd/go-stock-cli tool list
 go run ./cmd/go-stock-cli tool info --name GetStockInfo
 go run ./cmd/go-stock-cli tool GetStockInfo --stock-code 600237
+go run ./cmd/go-stock-cli tool GetStockInfo --stock-code "sz300308,sz300502"
 go run ./cmd/go-stock-cli tool GetStockLatestFinance --stockCode='sz002335,sz002506,sh603690'
 ```
 
@@ -62,15 +64,19 @@ CLI 也支持 kebab 写法：
 go run ./cmd/go-stock-cli tool get-stock-order-book --stock-code 600237
 ```
 
-`tool info` 会从原 Eino `ToolInfo.ParamsOneOf` 读取 JSON Schema，因此参数说明和原工具定义保持一致。
+`tool info` 会从原 Eino `ToolInfo.ParamsOneOf` 读取 JSON Schema，因此参数说明和原工具定义保持一致；对常见股票参数会额外展示推荐 CLI 参数名，例如 `stockCode` 推荐写成 `--stock-code`。
 
 F10/概念等单股语义工具遇到多只股票时会自动逐只查询并分段输出，避免底层接口把多代码合并成不可读结果。
 
 ### raw tool 参数和盯盘注意事项
 
 - `--stockCode`、`--stock-code`、`--stock_code`、`--stockcode` 都会归一为 `stockCode`。如果股票参数缺失，`GetStockInfo` / `GetStockOrderBook` 会直接报参数错误，不再伪装成“行情源无数据”。
-- PowerShell 多股票参数建议加引号，例如 `--stockCode='sh600237,sz002335'`；更稳妥时可用 `--args-json '{"stockCode":"sh600237,sz002335"}'`。
-- 盯盘优先用 `tool GetStockInfo`，它包含行情和五档盘口概览；`GetStockOrderBook` 是专用盘口工具，返回空盘口时 CLI 会自动尝试用 `GetStockInfo` 兜底。
+- PowerShell 多股票参数建议加引号，例如 `--stock-code "sh600237,sz002335"`；CLI 也会尽量兼容被拆开的裸股票代码参数。更稳妥时可用 `--args-json '{"stockCode":"sh600237,sz002335"}'`。
+- 盯盘优先用 `tool GetStockInfo`，它包含行情、带单位的成交量/成交额、可得的换手率/量比/PE/PB/市值字段和五档盘口概览；`GetStockOrderBook` 是专用盘口工具，返回空盘口时 CLI 会自动尝试用 `GetStockInfo` 兜底。
+- `GetStockHistoryMoneyData` 默认只输出最近 20 条，并附带近 3/5/10 日主力净额、连续净流入天数和最近一日主力净占比摘要；可用 `--limit` 调整。
+- `kline show` 会在 K 线表后追加当前价相对 MA5/10/20/60、近 5/20 根涨幅和量能摘要。日K/周K/月K/季K/年K默认 `--adjust qfq` 前复权，可传 `--adjust hfq` 后复权或 `--adjust none` 不复权；分钟线会忽略复权参数。
+- `kline signals` 会输出 GUI K线分析页“指标信号汇总”口径的看多、看空、震荡、中性统计和逐指标标签，同样支持 `--adjust qfq|hfq|none`。
+- `market hot cn/hk/us/global` 返回热门股票榜，对应 `GetHotStockList` 的沪深/港股/美股/全球市场类型；不要用 `market major-index` 或 `GetMarketData` 替代热门股。
 - `GetStockLatestFinance` 等单股语义工具遇到多股票输入时，CLI 会逐只拆分调用并分段输出。
 - 15:00 收盘后盘口仍可能返回最近快照，只能按收盘附近快照理解，不代表仍可成交。
 
@@ -85,6 +91,8 @@ go run ./cmd/go-stock-cli portfolio position set --stock-code 600237 --cost-pric
 持仓、成本、数量、止损、止盈、涨跌提醒、股价提醒必须走预览/确认令牌流程。原写入/通知/配置工具不会作为 raw `tool <name>` 入口开放。
 
 `portfolio list` 是 go-stock 本地自选/持仓元数据，不会自动同步真实券商交易。如果用户实际买入或卖出，需要通过 `portfolio position set` 预览并二次确认后更新本地成本、数量和提醒字段。确认时使用 `--confirm` 作为 flag，也兼容 `--confirm true`，但推荐只写 `--confirm`。
+
+未显式传入 `--sort` 时，新关注/新建持仓记录默认排序为 `99`；明确更新持仓排序时，可按当前持有成本从高到低传入 `1/2/3...`。
 
 分组管理命令用于对齐 GUI 的自选分组能力：
 

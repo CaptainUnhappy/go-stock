@@ -40,7 +40,8 @@ go-stock
 ├─ K线分析
 │  ├─ kline search
 │  ├─ kline recent
-│  └─ kline show
+│  ├─ kline show
+│  └─ kline signals
 ├─ 基金
 │  ├─ fund follow
 │  ├─ fund ranking
@@ -69,11 +70,15 @@ go-stock
 .\scripts\go-stock-cli.ps1 market industry-rank csrc-money --sort netamount --limit 20
 .\scripts\go-stock-cli.ps1 market industry-rank concept-money --sort netamount --limit 20
 .\scripts\go-stock-cli.ps1 market money-flow stock --sort r0_net --limit 20
-.\scripts\go-stock-cli.ps1 kline show --stock-code 002335 --k-line-type day --limit 120
+.\scripts\go-stock-cli.ps1 kline show --stock-code 002335 --k-line-type day --adjust qfq --limit 120
+.\scripts\go-stock-cli.ps1 kline signals --stock-code 002335 --k-line-type day --adjust qfq --limit 250
 .\scripts\go-stock-cli.ps1 tool GetStockLatestFinance --stockCode='sz002335,sz002506,sh603690'
 ```
 
 `market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。K 线命令支持 `002335` 这类深市前导 0 代码，不需要强制改成 `sz002335`。
+`kline show` 和 `kline signals` 对齐 GUI K线复权选择：日K及更长周期默认 `--adjust qfq` 前复权，可传 `--adjust hfq` 后复权或 `--adjust none` 不复权；分钟线忽略复权。
+
+`kline signals` 对齐 GUI K线分析页“指标信号汇总”，输出看多/看空/震荡/中性统计和逐指标标签。
 
 | 命令 | 作用 | 常见输入 |
 |---|---|---|
@@ -138,11 +143,12 @@ raw tool 参数和盯盘注意事项：
 
 | 工具 | 作用 | 适合什么时候用 | 常见输入提示 |
 |---|---|---|---|
-| `GetStockInfo` | 查询个股实时行情，涨跌额/涨跌幅按当前价和昨收计算，并附带五档盘口概览。 | 盯盘首选；看个股价格、涨跌幅、成交量、盘口概要。 | `stockCode`: 股票代码，支持 `sz003026`、`003026.SZ` 等；CLI 同时接受 `--stock-code` 等别名。 |
+| `GetStockInfo` | 查询个股实时行情，涨跌额/涨跌幅按当前价和昨收计算，并附带五档盘口概览；可得时同时展示带单位的成交量/成交额、换手率、量比、PE/PB、总市值、流通市值。 | 盯盘首选；看个股价格、涨跌幅、成交量、成交额、盘口概要和基础估值。 | `stockCode`: 股票代码，支持 `sz003026`、`003026.SZ` 等；CLI 推荐 `--stock-code`，也兼容 `--stockCode`、`--stock_code`、`--stockcode`。PowerShell 多股建议写 `--stock-code "sz300308,sz300502"`。 |
 | `GetStockOrderBook` | 查询五档盘口，包含买一至买五、卖一至卖五、当前价、涨跌额、涨跌幅、更新时间。若返回空盘口，CLI 会自动尝试 `GetStockInfo` 兜底。 | 判断封单、委托队列、买卖盘深度、为什么委托未成交；盯盘默认先用 `GetStockInfo`。 | `stockCode`: 股票代码，多只用英文逗号分隔；PowerShell 中建议加引号。 |
 | `GetStockKLine` | 查询个股 K 线数据。 | 技术走势、历史行情。 | 股票代码、周期、复权、数量。 |
-| `GetEastMoneyKLine` | 查询东方财富 K 线。 | 需要东方财富行情源。 | 股票代码、周期、复权。 |
-| `GetEastMoneyKLineWithMA` | 查询带均线的 K 线，输出列顺序稳定，便于人读和程序解析。 | 做趋势、均线、技术面分析。 | 股票代码、周期、均线参数，如 `maPeriods: 5,10,20,60`。 |
+| `GetEastMoneyKLine` | 查询东方财富 K 线。 | 需要东方财富行情源。 | 股票代码、周期、复权；CLI 可用 `--adjust-flag qfq|hfq|none`。 |
+| `GetEastMoneyKLineWithMA` | 查询带均线的 K 线，输出列顺序稳定，便于人读和程序解析。 | 做趋势、均线、技术面分析。 | 股票代码、周期、均线参数，如 `maPeriods: 5,10,20,60`；CLI 可用 `--adjust-flag qfq|hfq|none`。若需要自动摘要，优先用 `kline show`。 |
+| `kline signals` | CLI 子功能，按 K 线数据计算 GUI “指标信号汇总”口径的看多、看空、震荡、中性统计和逐指标标签。 | 用户问 K线分析页里的“看多/看空/震荡/中性”信号，或 Agent 需要快速判断技术指标共振。 | `--stock-code`: 股票代码；`--k-line-type`: 周期；`--adjust`: qfq/hfq/none；`--limit`: 默认建议 250。 |
 | `GetStockMinuteData` | 查询个股分时/分钟数据。 | 盘中走势、短周期波动。 | 股票代码、日期、分钟周期。 |
 | `GetStockConceptInfo` | 查询个股所属概念/板块；东方财富概念无数据时会尝试通达信 MAC 板块归属兜底。 | 分析个股题材、板块归属。 | 股票代码；CLI 归档层遇到多只代码会逐只查询并分段输出。 |
 
@@ -204,7 +210,7 @@ raw tool 参数和盯盘注意事项：
 |---|---|---|---|
 | `GetMoneyRankSina` | 查询新浪个股资金流向排名，对应前端“个股资金流向”的 9 个子标签。 | 用户明确问净流入额、流出资金、净流入率、主力/散户净流入或流出排名。 | `sort`: `netamount`, `outamount`, `ratioamount`, `r0_net`, `r0_out`, `r0_ratio`, `r3_net`, `r3_out`, `r3_ratio`；`limit` 最多 20。 |
 | `GetStockMoneyData` | 查询东方财富今日个股资金流入 Top50。 | 找今日主力资金流入个股，但不要求前端 9 个新浪排名标签。 | 通常无参数。 |
-| `GetStockHistoryMoneyData` | 查询个股历史资金流；东方财富历史接口无数据时会尝试新浪资金趋势兜底，并在标题中标注来源。 | 分析某股资金持续性。 | 股票代码，如 `003026.SZ`、`sz003026`。 |
+| `GetStockHistoryMoneyData` | 查询个股历史资金流；东方财富历史接口无数据时会尝试新浪资金趋势兜底，并在标题中标注来源。默认输出最近 20 条，并提供近 3/5/10 日主力净额、连续净流入天数、最近一日主力净占比摘要。 | 分析某股资金持续性，避免直接阅读 `f62`、`f184` 等原始字段。 | 股票代码，如 `003026.SZ`、`sz003026`；`limit`: 最近条数，默认 20。 |
 | `GetAllBKCodes` | 查询“板块资金流向”可用板块代码和名称。 | 调用板块资金流向历史或折线数据前确认 `BK` 代码。 | 通常无参数。 |
 | `GetBKFundFlowTopList` | 查询最新快照的板块资金流向排名。 | 用户问顶层“市场行情 > 板块资金流向”的最新排名。 | `topN`: 返回前 N 名。 |
 | `GetBKFundFlowTopListByDate` | 查询指定日期最新快照的板块资金流向排名。 | 用户问某天顶层“板块资金流向”排名。 | `date`: `YYYY-MM-DD`；`topN`。 |
@@ -285,7 +291,7 @@ raw tool 参数和盯盘注意事项：
 
 | 命令 | 作用 | 适合什么时候用 | 常见输入提示 |
 |---|---|---|---|
-| `portfolio position set` | 设置本地自选股持仓和提醒字段：成本价、持仓数量、开仓价、止盈价、止损价、涨跌提醒、股价提醒、排序。第一次调用只生成预览和 `confirmToken`，不会写入；第二次必须带确认 token 才写入。 | 用户把持仓告诉 Agent，希望 Agent 自动设置成本和提醒；用户实际买卖后也要用它更新本地数量。Agent 可自行判断止损、止盈、涨跌提醒，但需要二次确认。 | 必填：`stockCode`, `costPrice`, `volume`。常用可选：`stockName`, `entryPrice`, `takeProfitPrice`, `stopLossPrice`, `alarmChangePercent`, `alarmPrice`, `sort`, `reason`, `confirm`, `confirmToken`。确认推荐用 CLI flag `--confirm`。 |
+| `portfolio position set` | 设置本地自选股持仓和提醒字段：成本价、持仓数量、开仓价、止盈价、止损价、涨跌提醒、股价提醒、排序。第一次调用只生成预览和 `confirmToken`，不会写入；第二次必须带确认 token 才写入。未显式传入 `sort` 时，新关注/新建持仓默认排序为 `99`。 | 用户把持仓告诉 Agent，希望 Agent 自动设置成本和提醒；用户实际买卖后也要用它更新本地数量。Agent 可自行判断止损、止盈、涨跌提醒，但需要二次确认。 | 必填：`stockCode`, `costPrice`, `volume`。常用可选：`stockName`, `entryPrice`, `takeProfitPrice`, `stopLossPrice`, `alarmChangePercent`, `alarmPrice`, `sort`, `reason`, `confirm`, `confirmToken`。确认推荐用 CLI flag `--confirm`。 |
 
 ## CLI 自选分组命令
 

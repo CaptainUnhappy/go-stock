@@ -117,6 +117,9 @@ frontend/package.json.md5
 /build-dev.bat
 /build-prod.bat
 .gocache/
+.gomodcache/
+.gopath/
+.go-appdata/
 
 # Local agent/tool state
 .codex/

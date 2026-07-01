@@ -134,7 +134,7 @@ func handleGetEastMoneyKLine(o *OpenAi, funcArguments string, ctx *ToolContext) 
 	res := parallelStockToolSections(codes, func(stockCode string) string {
 		// A股优先使用 FetchKLineWithFallback（MAC→东方财富→新浪→腾讯→通达信）
 		if IsAStockCode(stockCode) {
-			return FetchKLineWithFallbackAsSection(stockCode, kType, limit)
+			return FetchKLineWithFallbackAsSection(stockCode, kType, limit, adjustFlag)
 		}
 		api := NewEastMoneyKLineApi(GetSettingConfig())
 		return EastMoneyKLineSection(api, stockCode, kLineType, adjustFlag, limit)
@@ -257,6 +257,7 @@ func EastMoneyKLineWithMASection(api *EastMoneyKLineApi, stockCode, kLineType st
 
 func handleGetEastMoneyKLineWithMA(o *OpenAi, funcArguments string, ctx *ToolContext) error {
 	kLineType := gjson.Get(funcArguments, "kLineType").String()
+	adjustFlag := gjson.Get(funcArguments, "adjustFlag").String()
 	limit := int(gjson.Get(funcArguments, "limit").Int())
 	maPeriodsStr := gjson.Get(funcArguments, "maPeriods").String()
 	if limit <= 0 {
@@ -281,7 +282,7 @@ func handleGetEastMoneyKLineWithMA(o *OpenAi, funcArguments string, ctx *ToolCon
 	res := parallelStockToolSections(codes, func(stockCode string) string {
 		// A股优先使用 FetchKLineWithFallback + 均线计算
 		if IsAStockCode(stockCode) {
-			return FetchKLineWithMASection(stockCode, normalizeKLineType(kLineType), limit, maPeriodsStr)
+			return FetchKLineWithMASection(stockCode, normalizeKLineType(kLineType), limit, maPeriodsStr, adjustFlag)
 		}
 		api := NewEastMoneyKLineApi(GetSettingConfig())
 		return EastMoneyKLineWithMASection(api, stockCode, kLineType, limit, maPeriodsStr)
@@ -314,9 +315,9 @@ func NormalizeKLineType(s string) string {
 }
 
 // FetchKLineWithFallbackAsSection 使用 FetchKLineWithFallback 获取K线数据并格式化为 markdown section
-func FetchKLineWithFallbackAsSection(stockCode, klt string, limit int) string {
+func FetchKLineWithFallbackAsSection(stockCode, klt string, limit int, adjustFlag ...string) string {
 	kType := normalizeKLineType(klt)
-	fallbackResult := FetchKLineWithFallback(stockCode, "", kType, limit, "")
+	fallbackResult := FetchKLineWithFallback(stockCode, "", kType, limit, "", adjustFlagFromVariadic(adjustFlag...))
 	if fallbackResult.Data == nil || len(*fallbackResult.Data) == 0 {
 		return stockCode + "：未获取到 K 线数据，请检查股票代码与类型。"
 	}
@@ -350,9 +351,9 @@ func FetchKLineWithFallbackAsSection(stockCode, klt string, limit int) string {
 }
 
 // FetchKLineWithMASection 使用 FetchKLineWithFallback 获取K线数据并附均线，格式化为 markdown section
-func FetchKLineWithMASection(stockCode, klt string, limit int, maPeriodsStr string) string {
+func FetchKLineWithMASection(stockCode, klt string, limit int, maPeriodsStr string, adjustFlag ...string) string {
 	kType := normalizeKLineType(klt)
-	fallbackResult := FetchKLineWithFallback(stockCode, "", kType, limit, "")
+	fallbackResult := FetchKLineWithFallback(stockCode, "", kType, limit, "", adjustFlagFromVariadic(adjustFlag...))
 	if fallbackResult.Data == nil || len(*fallbackResult.Data) == 0 {
 		return stockCode + "：未获取到带均线的 K 线数据，请检查股票代码与参数。"
 	}

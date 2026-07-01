@@ -26,7 +26,8 @@ description: Use when an agent needs to work with local go-stock financial data 
 .\scripts\go-stock-cli.ps1 market major-index --name 上证指数
 .\scripts\go-stock-cli.ps1 market industry-rank concept-money --sort netamount --limit 20
 .\scripts\go-stock-cli.ps1 market money-flow stock --sort r0_net --limit 20
-.\scripts\go-stock-cli.ps1 kline show --stock-code 002335 --k-line-type day --limit 120
+.\scripts\go-stock-cli.ps1 kline show --stock-code 002335 --k-line-type day --adjust qfq --limit 120
+.\scripts\go-stock-cli.ps1 kline signals --stock-code 002335 --k-line-type day --adjust qfq --limit 250
 .\scripts\go-stock-cli.ps1 portfolio list
 .\scripts\go-stock-cli.ps1 portfolio group rename --group-id 1 --new-name 短线观察
 .\scripts\go-stock-cli.ps1 portfolio position set --stock-code 600237 --cost-price 12.56 --volume 300
@@ -34,6 +35,7 @@ description: Use when an agent needs to work with local go-stock financial data 
 .\scripts\go-stock-cli.ps1 tool list
 .\scripts\go-stock-cli.ps1 tool info --name GetStockInfo
 .\scripts\go-stock-cli.ps1 tool GetStockInfo --stock-code 600237
+.\scripts\go-stock-cli.ps1 tool GetStockInfo --stock-code "sz300308,sz300502"
 ```
 
 JSON 输出：
@@ -72,6 +74,7 @@ skills/go-stock/references/tool-catalog.md
 - 基金使用 `fund follow` 和 `fund ranking`；基金搜索、详情、K线、净值、持仓分别用 `fund search/info/kline/nav/holdings`。
 - 用户明确要管理自选分组时，用 `portfolio group list/add/rename/assign/remove`；重命名分组用 `portfolio group rename --group-id <ID> --new-name <新名称>`。
 - 用户给持仓并要求 Agent 设置提醒时，使用 `portfolio position set`，先生成预览，用户二次确认后再带确认令牌写入。
+- 未显式传入 `sort` 时，新关注/新建持仓记录默认排序为 `99`；用户给当前持仓截图并要求更新持仓时，截图内持仓按持有成本排序，截图未出现但仍关注的标的保持默认 `99`。
 - `MCP服务` 和 `名站优选` 不属于新 CLI 主功能树。
 
 ## 归档工具层选择规则
@@ -84,6 +87,7 @@ skills/go-stock/references/tool-catalog.md
 - 只需要当前时间时用 `GetCurrentTime`；需要全球指数和开盘状态时用 `GetGlobalMarketStatus`，不要把两类信息混在一个上下文里。
 - 需要买一/卖一、五档委托、封单或盘口深度时，先用 `GetStockInfo`；它比专用 `GetStockOrderBook` 更适合盯盘且包含盘口概览。若必须查独立盘口字段，再调用 `GetStockOrderBook`；该工具返回空盘口时 CLI 会自动尝试 `GetStockInfo` 兜底。
 - raw tool 股票参数可用 `--stockCode`、`--stock-code`、`--stock_code` 或 `--stockcode`；多股参数在 PowerShell 中建议加引号，例如 `--stockCode='sh600237,sz002335'`，或使用 `--args-json`。
+- `tool info --name GetStockInfo` 会同时展示原 JSON Schema 字段和推荐 CLI 参数名；Agent 优先使用 `--stock-code`，只有需要完全复刻原工具参数时再看 `stockCode`。
 - 市场复盘按顺序组合：市场总览 -> 全球股指/北向资金 -> 异动排行 -> 热点事件 -> 涨停梯队。
 - 条件选股优先用 `SearchStockByIndicators` 处理自然语言条件；需要结构化技术形态时用 `FilterStocks`。
 - 研报、公告、政策、新闻搜索优先用 `FinanceSearch`，再按对象细分到 `SearchReport`、`SearchAnnouncement`、`SearchNews`。
@@ -94,7 +98,11 @@ skills/go-stock/references/tool-catalog.md
 - 用户问“个股资金流向”的 9 个排名标签时，用 `GetMoneyRankSina` 并选择 `sort`；不要用 `GetStockMoneyData` 替代这组前端标签。
 - 用户问顶层“市场行情 > 板块资金流向”时，用 `GetBKFundFlowTopListByDate`、`GetBKFundFlowListByDate` 或 `GetAllBKCodes`；不要误用“行业排名 > 概念板块资金排名”的 `GetIndustryMoneyRank`。
 - 用户问“涨跌家数比”“涨跌停家数比”时，优先用 `GetMarketData`；若在 App/Wails 内部，可直接用 `GetTodayMarketStatistic` 的 `upDownRatio`、`limitRatio` 字段。
+- 用户问“当前热门 > 沪深/港股/美股/全球热门股”时，用 `market hot cn/hk/us/global`；这些 CLI 命令映射到 `GetHotStockList` 的对应市场类型，不应再用 `GetMarketData` 替代。
 - 用户问“当日异动次数最多的概念”时，优先用 `GetChangeRank(days=1, topN=...)`。如果本地 `stock_change_history` 或 `all_stock_info` 为空，改用实时 `GetStockChanges` 全量异动股票，再逐只用 `GetStockConceptInfo` 补概念并按概念聚合异动次数。
+- `GetStockHistoryMoneyData` 默认输出最近 20 条，并在表格前提供近 3/5/10 日主力净额、连续净流入天数和最近一日主力净占比；需要更多历史时传 `--limit`。
+- `kline show` 会在 K 线表后追加均线/涨幅/量能摘要；复盘时先读摘要，再回看表格确认具体日期。日K及更长周期默认 `--adjust qfq` 前复权，也可传 `--adjust hfq` 或 `--adjust none`；分钟线忽略复权。
+- `kline signals` 用 K 线数据计算“看多/看空/震荡/中性”指标信号汇总，适合替代 GUI K线分析页截图里的“指标信号汇总”，并支持 `--adjust qfq|hfq|none`。
 - 基金分析先 `SearchFund` 确认代码，再查 `GetFundInfo`、`GetFundHistoryNetValue`、`GetFundTop10Holdings`。
 - 用户把持仓告诉 Agent 并要求设置提醒时，先用 `QueryStockCodeInfo` 确认代码，再用 `GetFollowedStocks` 查看已有设置；Agent 可以自行提出止损价、止盈价、涨跌提醒和股价提醒，但必须先调用 `portfolio position set` 生成预览和确认令牌，复述给用户并等待二次确认后，才允许用同一组参数加 `--confirm` 和 `confirmToken` 写入。`portfolio list` 是 go-stock 本地自选/持仓元数据，不是券商实时持仓；用户实际买卖后需要走该流程更新本地数量和提醒。
 - K 线命令支持 `002335` 这类深市前导 0 纯数字代码，也支持 `sz002335`、`002335.SZ`。
@@ -113,9 +121,11 @@ skills/go-stock/references/tool-catalog.md
 | 看市场全貌 | `GetMarketData` | 市场指数、涨跌分布、新股申购等总览。 |
 | 看全球指数 | `GetGlobalMarketStatus` | 全球主要股指行情和开盘状态。 |
 | 查行业涨幅排名 | `GetIndustryRank` | 对应“行业排名 > 行业涨幅排名”。 |
-| 看个股行情 | `GetStockInfo` | 个股实时行情，涨跌按昨收计算，并附带盘口概览。 |
+| 看个股行情 | `GetStockInfo` | 个股实时行情，涨跌按昨收计算，并附带盘口、带单位的成交量/成交额、换手率、量比、PE/PB、市值等可得字段。 |
 | 看盘口/封单 | `GetStockInfo` | 盯盘优先工具，包含行情和五档盘口概览；`GetStockOrderBook` 仅作专用补充。 |
 | 看K线趋势 | `GetEastMoneyKLineWithMA` | K 线并带均线，输出列顺序稳定。 |
+| 看K线摘要 | `kline show` | K 线表后追加当前价相对 MA5/10/20/60、近 5/20 根涨幅和量能摘要，支持 `--adjust qfq|hfq|none`。 |
+| 看指标信号 | `kline signals` | 输出看多、看空、震荡、中性统计和 MA/MACD/RSI/KDJ/BOLL 等指标标签，支持 `--adjust qfq|hfq|none`。 |
 | 查最新财务 | `GetStockLatestFinance` | EPS、ROE、营收、净利润等核心指标。 |
 | 查估值位置 | `GetStockValuationPercentile` | PE 等估值历史分位。 |
 | 查研报 | `GetStockResearchReport` / `SearchReport` | 个股研报或全局研报搜索。 |
@@ -124,6 +134,7 @@ skills/go-stock/references/tool-catalog.md
 | 查“当前热门 > 热门话题” | App/Wails `HotTopic(size)` | 前端热门话题页；底层为东方财富股吧话题。CLI 归档工具层未直接迁移时不要混同 `GetHotEventList`。 |
 | 查雪球热门事件 | `GetHotEventList` | 雪球热门话题/事件，和前端“当前热门 > 热门话题”不是同一数据源。 |
 | 查个股资金流榜单 | `GetMoneyRankSina` | 对应前端个股资金流向 9 个排名标签，可按 `sort` 切换。 |
+| 查个股历史资金 | `GetStockHistoryMoneyData` | 最近历史资金流表加主力净流入摘要，默认最近 20 条。 |
 | 查个股资金流Top | `GetStockMoneyData` | 东方财富今日个股资金流向 Top50。 |
 | 查板块资金流向 | `GetBKFundFlowTopListByDate` / `GetBKFundFlowListByDate` | 对应前端顶层“板块资金流向”排名和折线数据。 |
 | 查行业/概念资金排名 | `GetIndustryMoneyRank` | 对应“行业排名”内行业/概念/地域资金排名。 |

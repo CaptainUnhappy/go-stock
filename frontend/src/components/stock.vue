@@ -58,7 +58,6 @@ import {
   EventsOff,
   EventsOn,
   WindowFullscreen,
-  WindowReload,
   WindowUnfullscreen
 } from '../../wailsjs/runtime'
 import {Add, ChatboxOutline, CreateOutline} from '@vicons/ionicons5'
@@ -526,9 +525,8 @@ onBeforeMount(() => {
     updateData(data)
   })
 
-  EventsOn("refreshFollowList", (data) => {
-
-    WindowReload()
+  EventsOn("refreshFollowList", () => {
+    reloadFollowList()
   })
 
   EventsOn("newChatStream", async (msg) => {
@@ -694,6 +692,7 @@ const unwatch = watch(groupList, () => {
 // 在组件卸载时清理监听器
 onBeforeUnmount(() => {
   unwatch();
+  window.removeEventListener('focus', reloadFollowListOnFocus)
 });
 onMounted(() => {
   nextTick(() => {
@@ -701,23 +700,8 @@ onMounted(() => {
   });
 
   message.loading("Loading...")
-  GetFollowList(currentGroupId.value).then(result => {
-
-    followList.value = result
-    for (const followedStock of result) {
-      if (followedStock.StockCode.startsWith("us")) {
-        followedStock.StockCode = "gb_" + followedStock.StockCode.replace("us", "").toLowerCase()
-      }
-      if (!stocks.value.includes(followedStock.StockCode)) {
-        stocks.value.push(followedStock.StockCode)
-      }
-      Greet(followedStock.StockCode).then(result => {
-        updateData(result)
-      })
-    }
-    //monitor()
-    message.destroyAll()
-  })
+  reloadFollowList().finally(() => message.destroyAll())
+  window.addEventListener('focus', reloadFollowListOnFocus)
 
   GetVersionInfo().then((res) => {
     icon.value = res.icon
@@ -917,8 +901,7 @@ function doFollowStock(groupId) {
           }
         }).catch(err => message.error('加入分组失败: ' + (err?.message || err)))
       }
-      GetFollowList(currentGroupId.value).then(result => { followList.value = result })
-      monitor()
+      reloadFollowList()
     } else {
       message.error(result)
     }
@@ -1071,6 +1054,32 @@ async function monitor() {
     })
   }
 }
+
+async function reloadFollowList(groupId = currentGroupId.value) {
+  const result = await GetFollowList(groupId)
+  followList.value = result || []
+  stocks.value = []
+  for (const followedStock of followList.value) {
+    if (followedStock.StockCode.startsWith("us")) {
+      followedStock.StockCode = "gb_" + followedStock.StockCode.replace("us", "").toLowerCase()
+    }
+    if (!stocks.value.includes(followedStock.StockCode)) {
+      stocks.value.push(followedStock.StockCode)
+    }
+    Greet(followedStock.StockCode).then(result => {
+      updateData(result)
+    })
+  }
+  const stockInfo = followList.value.find(item => item.StockCode === fromEastMoneyCode(currentStockTradingPrice.value.stockCode))
+  if (stockInfo) {
+    currentStockTradingPrice.value.costPrice = stockInfo.CostPrice || 0
+    currentStockTradingPrice.value.entryPrice = stockInfo.EntryPrice || 0
+    currentStockTradingPrice.value.takeProfitPrice = stockInfo.TakeProfitPrice || 0
+    currentStockTradingPrice.value.stopLossPrice = stockInfo.StopLossPrice || 0
+  }
+}
+
+const reloadFollowListOnFocus = () => reloadFollowList()
 
 
 function GetSortKey(sort, code) {
@@ -2463,24 +2472,9 @@ function AddStockGroupInfo(groupId, code, name) {
 }
 
 function updateTab(name) {
-  stocks.value = []
   const tabId= Number(name)
   currentGroupId.value = tabId;
-  GetFollowList(tabId).then(result => {
-    followList.value = result
-
-    for (const followedStock of result) {
-      if (followedStock.StockCode.startsWith("us")) {
-        followedStock.StockCode = "gb_" + followedStock.StockCode.replace("us", "").toLowerCase()
-      }
-      stocks.value.push(followedStock.StockCode)
-      Greet(followedStock.StockCode).then(result => {
-        updateData(result)
-      })
-    }
-    //monitor()
-    message.destroyAll()
-  })
+  reloadFollowList(tabId).finally(() => message.destroyAll())
 }
 
 function delTab(groupId) {

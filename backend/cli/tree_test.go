@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
+	"go-stock/backend/data"
 	"go-stock/backend/db"
 
 	einotool "github.com/cloudwego/eino/components/tool"
@@ -87,6 +89,7 @@ func TestRunnerRegistersExecutableCommands(t *testing.T) {
 		"portfolio group rename",
 		"fund ranking",
 		"kline show",
+		"kline signals",
 		"tool list",
 		"tool info",
 	} {
@@ -275,5 +278,103 @@ func TestSingleStockArchiveToolClassification(t *testing.T) {
 	}
 	if isSingleStockArchiveTool("GetEastMoneyKLineWithMA") {
 		t.Fatal("GetEastMoneyKLineWithMA supports multi-code output and should not be split by CLI wrapper")
+	}
+}
+
+func TestRawToolInfoShowsCLIStockCodeAlias(t *testing.T) {
+	ensureTestDB(t)
+	runner, err := NewRunner()
+	if err != nil {
+		t.Fatalf("NewRunner failed: %v", err)
+	}
+	info, err := runner.Run(context.Background(), Request{
+		CommandPath: "tool info",
+		Args: map[string]any{
+			"name": "GetStockInfo",
+		},
+	})
+	if err != nil {
+		t.Fatalf("tool info failed: %v", err)
+	}
+	for _, want := range []string{"CLI 参数名", "--stock-code", "sz300308,sz300502"} {
+		if !strings.Contains(info.Output, want) {
+			t.Fatalf("tool info missing %q: %s", want, info.Output)
+		}
+	}
+}
+
+func TestKLineSummaryCalculatesMovingAverageAndVolume(t *testing.T) {
+	list := make([]data.KLineData, 0, 25)
+	for i := 1; i <= 25; i++ {
+		list = append(list, data.KLineData{
+			Day:    "2026-06-" + strconv.Itoa(i),
+			Close:  strconv.Itoa(i),
+			Volume: "100",
+		})
+	}
+	list[len(list)-1].Volume = "150"
+	ma5, ok := averageClose(list, 5)
+	if !ok || ma5 != 23 {
+		t.Fatalf("MA5 = %v/%v, want 23/true", ma5, ok)
+	}
+	ret5, ok := kLineReturnPercent(list, 5)
+	if !ok || ret5 <= 0 {
+		t.Fatalf("ret5 = %v/%v, want positive", ret5, ok)
+	}
+	vol, ok := kLineVolumeSummary(list)
+	if !ok || !strings.Contains(vol, "放量") {
+		t.Fatalf("volume summary = %q/%v, want 放量", vol, ok)
+	}
+}
+
+func TestKLineSignalsCalculateSummary(t *testing.T) {
+	list := make([]data.KLineData, 0, 220)
+	for i := 1; i <= 220; i++ {
+		closeValue := 10.0 + float64(i)*0.1
+		list = append(list, data.KLineData{
+			Day:    "2026-06-" + strconv.Itoa(i),
+			Open:   strconv.FormatFloat(closeValue-0.05, 'f', 2, 64),
+			Close:  strconv.FormatFloat(closeValue, 'f', 2, 64),
+			High:   strconv.FormatFloat(closeValue+0.15, 'f', 2, 64),
+			Low:    strconv.FormatFloat(closeValue-0.15, 'f', 2, 64),
+			Volume: strconv.Itoa(1000 + i),
+		})
+	}
+	bars := parseKLineBars(list)
+	signals := evaluateKLineSignals(bars)
+	if len(signals) < 30 {
+		t.Fatalf("signals = %d, want at least 30", len(signals))
+	}
+	var bullish int
+	for _, signal := range signals {
+		if signal.Signal == "bullish" {
+			bullish++
+		}
+	}
+	if bullish == 0 {
+		t.Fatalf("expected at least one bullish signal: %#v", signals)
+	}
+}
+
+func TestKLineAdjustFlagDefaultsAndValidation(t *testing.T) {
+	got, err := kLineAdjustFlag(map[string]any{}, "day")
+	if err != nil {
+		t.Fatalf("kLineAdjustFlag day failed: %v", err)
+	}
+	if got != "qfq" {
+		t.Fatalf("day default adjust = %q, want qfq", got)
+	}
+
+	got, err = kLineAdjustFlag(map[string]any{"adjustFlag": "hfq"}, "5")
+	if err != nil {
+		t.Fatalf("kLineAdjustFlag minute failed: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("minute adjust = %q, want empty", got)
+	}
+
+	got, err = kLineAdjustFlag(map[string]any{"adjustFlag": "bad"}, "day")
+	if err == nil {
+		t.Fatalf("kLineAdjustFlag bad err = nil, got %q", got)
 	}
 }

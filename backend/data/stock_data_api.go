@@ -142,6 +142,15 @@ type StockInfo struct {
 	BA       string  `json:"盘前盘后"`
 	BAChange string  `json:"盘前盘后涨跌幅"`
 
+	TurnoverRate           string `json:"换手率" gorm:"-"`
+	VolumeRatio            string `json:"量比" gorm:"-"`
+	PERatio                string `json:"市盈率" gorm:"-"`
+	PBRatio                string `json:"市净率" gorm:"-"`
+	MarketValue            string `json:"总市值" gorm:"-"`
+	CirculatingMarketValue string `json:"流通市值" gorm:"-"`
+	VolumeUnit             string `json:"成交量单位" gorm:"-"`
+	AmountUnit             string `json:"成交额单位" gorm:"-"`
+
 	//以下是字段值需二次计算
 	ChangePercent     float64 `json:"changePercent"`     //涨跌幅
 	ChangePrice       float64 `json:"changePrice"`       //涨跌额
@@ -240,6 +249,8 @@ type FollowedStock struct {
 	TakeProfitPrice    float64
 	StopLossPrice      float64
 }
+
+const FollowedStockDefaultSort int64 = 99
 
 func (receiver FollowedStock) TableName() string {
 	return "followed_stock"
@@ -564,11 +575,6 @@ func (receiver StockDataApi) Follow(stockCode string) string {
 		return "已经关注了"
 	}
 
-	maxSort := int64(0)
-	db.Dao.Model(&FollowedStock{}).Raw("select max(sort) as sort from followed_stock").Scan(&maxSort)
-
-	//logger.SugaredLogger.Infof("Follow-maxSort %v", maxSort)
-
 	stockInfo := (*stockInfos)[0]
 	price, _ := convertor.ToFloat(stockInfo.Price)
 	db.Dao.Model(&FollowedStock{}).FirstOrCreate(&FollowedStock{
@@ -578,7 +584,7 @@ func (receiver StockDataApi) Follow(stockCode string) string {
 		Time:               time.Now(),
 		ChangePercent:      0,
 		PriceChange:        0,
-		Sort:               maxSort + 1,
+		Sort:               FollowedStockDefaultSort,
 		AlarmChangePercent: 3,
 		AlarmPrice:         price + 1,
 	}, &FollowedStock{StockCode: stockCode})
@@ -903,6 +909,28 @@ func ParseTxHKStockData(datas []string) (map[string]string, error) {
 		result["卖五报价"] = parts[27]
 		result["卖五申报"] = parts[28]
 
+		if len(parts) > 36 {
+			result["成交的股票数"] = parts[35]
+			result["成交金额"] = parts[36]
+			result["成交量单位"] = "手"
+			result["成交额单位"] = "万元"
+		}
+		if len(parts) > 37 {
+			result["换手率"] = parts[37]
+		}
+		if len(parts) > 38 {
+			result["市盈率"] = parts[38]
+		}
+		if len(parts) > 43 {
+			result["流通市值"] = parts[42]
+			result["总市值"] = parts[43]
+		}
+		if len(parts) > 44 {
+			result["市净率"] = parts[44]
+		}
+		if len(parts) > 52 {
+			result["量比"] = parts[52]
+		}
 	}
 
 	timestr := ""
@@ -1119,6 +1147,8 @@ func ParseSHSZStockData(datas []string) (map[string]string, error) {
 	result["竞卖价"] = parts[7]
 	result["成交的股票数"] = parts[8]
 	result["成交金额"] = parts[9]
+	result["成交量单位"] = "股"
+	result["成交额单位"] = "元"
 	result["买一申报"] = parts[10]
 	result["买一报价"] = parts[11]
 	result["买二申报"] = parts[12]

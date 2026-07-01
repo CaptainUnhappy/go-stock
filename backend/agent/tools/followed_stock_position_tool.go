@@ -252,8 +252,6 @@ func ensureFollowedStockPosition(input followedStockPositionInput) error {
 		return nil
 	}
 
-	var maxSort int64
-	_ = db.Dao.Model(&data.FollowedStock{}).Raw("select max(sort) as sort from followed_stock").Scan(&maxSort).Error
 	name := input.StockName
 	if name == "" {
 		name = input.StockCode
@@ -264,7 +262,7 @@ func ensureFollowedStockPosition(input followedStockPositionInput) error {
 		CostPrice:          input.CostPrice,
 		Volume:             input.Volume,
 		Time:               time.Now(),
-		Sort:               maxSort + 1,
+		Sort:               data.FollowedStockDefaultSort,
 		AlarmChangePercent: input.AlarmChangePercent,
 		AlarmPrice:         input.AlarmPrice,
 		EntryPrice:         input.EntryPrice,

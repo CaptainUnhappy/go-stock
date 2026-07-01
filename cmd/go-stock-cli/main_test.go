@@ -27,6 +27,18 @@ func TestParseArgsNormalizesStockCodeAliases(t *testing.T) {
 	}
 }
 
+func TestParseArgsNormalizesAdjustFlagAliases(t *testing.T) {
+	for _, flag := range []string{"--adjust", "--adjust-flag", "--adjust_flag", "--adjustFlag"} {
+		req, _, err := parseArgs([]string{"kline", "show", "--stock-code", "002335", flag, "hfq"})
+		if err != nil {
+			t.Fatalf("parseArgs(%s) failed: %v", flag, err)
+		}
+		if got := req.Args["adjustFlag"]; got != "hfq" {
+			t.Fatalf("%s adjustFlag arg = %#v, want hfq", flag, got)
+		}
+	}
+}
+
 func TestParseArgsAppendsBareStockCodeAfterOption(t *testing.T) {
 	req, _, err := parseArgs([]string{"tool", "GetStockLatestFinance", "--stockCode", "sh600237", "sz002335"})
 	if err != nil {
@@ -36,6 +48,16 @@ func TestParseArgsAppendsBareStockCodeAfterOption(t *testing.T) {
 		t.Fatalf("CommandPath = %q, want raw tool command path", req.CommandPath)
 	}
 	if got := req.Args["stockCode"]; got != "sh600237,sz002335" {
+		t.Fatalf("stockCode arg = %#v, want comma-joined list", got)
+	}
+}
+
+func TestParseArgsAppendsBareStockCodeWithSplitCommas(t *testing.T) {
+	req, _, err := parseArgs([]string{"tool", "GetStockInfo", "--stockCode", "sz300308,", "sz300502"})
+	if err != nil {
+		t.Fatalf("parseArgs failed: %v", err)
+	}
+	if got := req.Args["stockCode"]; got != "sz300308,sz300502" {
 		t.Fatalf("stockCode arg = %#v, want comma-joined list", got)
 	}
 }
