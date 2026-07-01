@@ -136,6 +136,7 @@ var toolGroupMap = map[string]ToolGroup{
 	"GetMutualTop10Deal":         GroupMoneyFlow,
 	"GetStockHistoryMoneyData":   GroupMoneyFlow,
 	"GetIndustryMoneyRank":       GroupMoneyFlow,
+	"GetMACCapitalFlow":          GroupMoneyFlow,
 	"GetAllBKCodes":              GroupMoneyFlow,
 	"GetBKFundFlowTopList":       GroupMoneyFlow,
 	"GetBKFundFlowTopListByDate": GroupMoneyFlow,
@@ -188,6 +189,7 @@ var groupKeywordsList = []groupKeywords{
 	{GroupStockAnalysis, []string{
 		"股票", "股价", "行情", "K线", "k线", "日K", "周K", "月K", "分钟线",
 		"分时", "实时", "价格", "涨跌", "成交量", "成交额",
+		"集合竞价", "竞价", "开盘竞价", "收盘竞价", "竞价明细",
 		"财务", "报表", "营收", "利润", "ROE", "PE", "PB", "EPS",
 		"毛利率", "净利率", "现金流", "负债率",
 		"行业估值", "行业排名", "行业盈利",

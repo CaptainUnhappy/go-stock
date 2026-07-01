@@ -776,7 +776,43 @@ func (receiver StockDataApi) GetStockList(key string) []StockBasic {
 		existingStocks[item.SECUCODE] = true
 	}
 
+	// 场内基金（ETF）也纳入搜索：GetFundList 会在本地 FundBasic 缺失时触发东方财富在线搜索并缓存。
+	// 这样即使通达信同步未覆盖 ETF（未重启 / 同步失败 / 本地无缓存），也能立即搜到如 513310 中韩半导体。
+	if key != "" {
+		funds := NewFundApi().GetFundList(key)
+		for _, fund := range funds {
+			if !IsOnExchangeFund(fund.Code) {
+				continue
+			}
+			tsCode := fundCodeToTsCode(fund.Code)
+			if tsCode == "" || existingStocks[tsCode] {
+				continue
+			}
+			result = append(result, StockBasic{
+				TsCode:   tsCode,
+				Name:     fund.Name,
+				Fullname: fund.FullName,
+				Market:   tsCode[len(tsCode)-2:],
+			})
+			existingStocks[tsCode] = true
+		}
+	}
+
 	return result
+}
+
+// fundCodeToTsCode 场内基金纯代码转 ts_code（如 513310 → 513310.SH，159915 → 159915.SZ）
+func fundCodeToTsCode(code string) string {
+	if len(code) == 0 {
+		return ""
+	}
+	if strings.HasPrefix(code, "5") || strings.HasPrefix(code, "6") {
+		return code + ".SH"
+	}
+	if strings.HasPrefix(code, "1") || strings.HasPrefix(code, "0") || strings.HasPrefix(code, "3") {
+		return code + ".SZ"
+	}
+	return code + ".SH"
 }
 
 func (receiver StockDataApi) GetFollowedStockByStockCode(code string) FollowedStock {

@@ -386,7 +386,7 @@ const memoryCountOptions = [
   { label: '5 条', value: 5 },
   { label: '10 条', value: 10 },
 ]
-const agentMode = ref('auto')
+const agentMode = ref('plan_execute')
 const agentModeOptions = [
   { label: '🤖 自动选择', value: 'auto' },
   { label: '⚡ 快速模式', value: 'react' },
@@ -399,20 +399,19 @@ watch(agentMode, (val) => {
 })
 
 watch(aiConfigId, (val) => {
+  // 默认使用规划模式，不因模型切换而改变 agentMode
   const label = modelLabelForConfig(val).toLowerCase()
   const labelCompact = label.replace(/[\s_-]/g, '')
   if (label.includes('deepseek-chat')) {
-    agentMode.value = 'plan_execute'
     thinkingMode.value = false
-    showHint('deepseek-chat 已使用规划模式并关闭思考模式')
-  } else if (label.includes('deepseek')) {
-    showHint('⚡ DeepSeek模型推荐使用快速模式')
+    showHint('deepseek-chat 不支持思考模式已关闭，当前使用规划模式')
   } else if (labelCompact.includes('glm5.1')) {
-    agentMode.value = 'plan_execute'
     thinkingMode.value = true
-    showHint('GLM 5.1 已使用规划模式并开启思考模式')
+    showHint('GLM 5.1 已开启思考模式，当前使用规划模式')
+  } else if (label.includes('deepseek')) {
+    showHint('⚡ DeepSeek 当前使用规划模式')
   } else if (label.includes('glm')) {
-    showHint('🧠 GLM模型推荐使用规划模式')
+    showHint('🧠 GLM 当前使用规划模式')
   }
 })
 

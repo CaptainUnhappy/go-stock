@@ -502,6 +502,25 @@ func Tools(tools []Tool) []Tool {
 	tools = append(tools, Tool{
 		Type: "function",
 		Function: ToolFunction{
+			Name:        "GetMACCapitalFlow",
+			Description: "通过通达信MAC接口获取个股资金流向数据，包括今日主力/散户流入流出及净流入、5日主力买卖净额与超大/大/中/小单净流入（单位：元）。主要支持A股。支持一次查询多只，将并行请求后合并结果。",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"stockCode": map[string]any{
+						"type":        "string",
+						"description": "股票代码,如：600519.SH。注意 上海证券交易所股票以.SH结尾，深圳证券交易所股票以.SZ结尾，北交所股票以.BJ结尾。多只时可用英文逗号分隔。",
+					},
+					"stockCodes": toolSchemaStockCodes,
+				},
+				Required: []string{"stockCode"},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
 			Name:        "GetTdxCompanyCategory",
 			Description: "通过通达信协议获取股票F10分类信息。不传category参数时返回所有可用分类名称列表；传入category参数时返回该分类的详细内容。可用分类包括：最新提示、公司概况、财务分析、股本结构、股东研究、机构持股、分红融资、高管治理、资金动向、资本运作、热点题材、公司公告、公司报道、经营分析、行业分析、研报评级。",
 			Parameters: &FunctionParameters{
@@ -2329,6 +2348,7 @@ var dataToolGroupMap = map[string]dataToolGroup{
 	"GetMutualTop10Deal":       dataToolGroupMoneyFlow,
 	"GetStockHistoryMoneyData": dataToolGroupMoneyFlow,
 	"GetIndustryMoneyRank":     dataToolGroupMoneyFlow,
+	"GetMACCapitalFlow":        dataToolGroupMoneyFlow,
 
 	"GetNewsListData":          dataToolGroupNewsResearch,
 	"QueryStockNews":           dataToolGroupNewsResearch,

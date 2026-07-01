@@ -3138,6 +3138,57 @@ func GetAllDataTools() []tool.BaseTool {
 	))
 
 	tools = append(tools, NewDataToolWrapper(
+		"GetStockCallAuction",
+		"查询股票集合竞价明细数据（支持A股/港股/美股）。返回逐笔竞价的时间、价格、已成交数量、未成交数量及买卖方向。集合竞价发生在开盘前（A股9:15-9:25）和收盘前（A股14:57-15:00）。",
+		map[string]*schema.ParameterInfo{
+			"stockCode": {
+				Type:     "string",
+				Desc:     "股票代码，如：600519.SH、000001.SZ、02202.HK、AAPL.US",
+				Required: true,
+			},
+			"count": {
+				Type:     "string",
+				Desc:     "返回的竞价明细条数，默认50，最大500",
+				Required: false,
+			},
+		},
+		func(args string) (string, error) {
+			stockCode := gjson.Get(args, "stockCode").String()
+			if stockCode == "" {
+				return "请输入股票代码", nil
+			}
+			count := uint32(50)
+			if c := gjson.Get(args, "count").String(); c != "" {
+				if n, err := strconv.ParseUint(c, 10, 32); err == nil && n > 0 {
+					count = uint32(n)
+				}
+			}
+			list := data.NewTdxKLineApi().GetCallAuctionAuto(stockCode, 0, count)
+			if list == nil || len(*list) == 0 {
+				return "未获取到 " + stockCode + " 的集合竞价数据（非竞价时段或代码不支持）", nil
+			}
+			type auctionRow struct {
+				Time      string `md:"时间"`
+				Price     string `md:"价格"`
+				Matched   string `md:"已成交"`
+				Unmatched string `md:"未成交"`
+				Flag      string `md:"方向"`
+			}
+			rows := make([]auctionRow, 0, len(*list))
+			for _, item := range *list {
+				rows = append(rows, auctionRow{
+					Time:      item.Time,
+					Price:     item.Price,
+					Matched:   item.Matched,
+					Unmatched: item.Unmatched,
+					Flag:      item.Flag,
+				})
+			}
+			return util.MarkdownTableWithTitle(stockCode+" 集合竞价明细", rows), nil
+		},
+	))
+
+	tools = append(tools, NewDataToolWrapper(
 		"GetStockConceptInfo",
 		"获取股票的概念板块信息，包括概念名称、成分股数量等",
 		map[string]*schema.ParameterInfo{
@@ -5581,6 +5632,36 @@ func GetAllDataTools() []tool.BaseTool {
 				return fmt.Sprintf("%s：获取所属板块信息失败或无数据", stockCode), nil
 			}
 			return util.MarkdownTableWithTitle(stockCode+" 所属板块（通达信MAC）", *items), nil
+		},
+	))
+
+	// GetMACCapitalFlow - 通过通达信MAC接口获取个股资金流向数据
+	tools = append(tools, NewDataToolWrapper(
+		"GetMACCapitalFlow",
+		"通过通达信MAC接口获取个股资金流向数据，包括今日主力/散户流入流出及净流入、5日主力买卖净额与超大/大/中/小单净流入（单位：元）。主要支持A股。支持一次查询多只，将并行请求后合并结果。",
+		map[string]*schema.ParameterInfo{
+			"stockCode": {
+				Type:     "string",
+				Desc:     "股票代码,如：600519.SH。上海证券交易所股票以.SH结尾，深圳证券交易所股票以.SZ结尾，北交所股票以.BJ结尾。多只时可用英文逗号分隔。",
+				Required: true,
+			},
+		},
+		func(args string) (string, error) {
+			codes := parseStockCodesFromArgs(args, "stockCode")
+			if len(codes) == 0 {
+				return "请提供股票代码参数 stockCode", nil
+			}
+			api := data.NewTdxKLineApi()
+			sections := make([]string, 0, len(codes))
+			for _, code := range codes {
+				row := api.GetMACCapitalFlow(code)
+				if row == nil {
+					sections = append(sections, fmt.Sprintf("%s：获取资金流向数据失败或无数据", code))
+					continue
+				}
+				sections = append(sections, util.MarkdownTableWithTitle(code+" 资金流向（通达信MAC）", []data.MACCapitalFlowData{*row}))
+			}
+			return strings.Join(sections, "\r\n\r\n"), nil
 		},
 	))
 

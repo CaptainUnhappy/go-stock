@@ -27,6 +27,37 @@ func TestTdxKLineApi_GetCallAuction(t *testing.T) {
 	}
 }
 
+func TestTdxKLineApi_GetCallAuctionAuto(t *testing.T) {
+	api := NewTdxKLineApi()
+	tests := []struct {
+		code  string
+		label string
+	}{
+		{"600519.SH", "A股-贵州茅台"},
+		{"02202.HK", "港股-万科企业"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.label, func(t *testing.T) {
+			list := api.GetCallAuctionAuto(tt.code, 0, 50)
+			if list == nil {
+				t.Errorf("[%s] GetCallAuctionAuto returned nil", tt.label)
+				return
+			}
+			t.Logf("[%s] 集合竞价明细条数: %d", tt.label, len(*list))
+			if len(*list) > 0 {
+				first := (*list)[0]
+				t.Logf("  首条: time=%s price=%s matched=%s unmatched=%s flag=%s",
+					first.Time, first.Price, first.Matched, first.Unmatched, first.Flag)
+				last := (*list)[len(*list)-1]
+				t.Logf("  末条: time=%s price=%s matched=%s unmatched=%s flag=%s",
+					last.Time, last.Price, last.Matched, last.Unmatched, last.Flag)
+			} else {
+				t.Logf("  [%s] 返回空（可能非竞价时段或 MAC 主服务器不支持 market=3/4 竞价）", tt.label)
+			}
+		})
+	}
+}
+
 func TestTdxKLineApi_GetKLineData(t *testing.T) {
 	api := NewTdxKLineApi()
 	data := api.GetKLineData("600519.SH", "101", 10)
@@ -347,5 +378,40 @@ func TestTdxKLineApi_GetMACSymbolBelongBoard(t *testing.T) {
 		for _, item := range *items {
 			t.Logf("  type=%s name=%s price=%.2f", item.BoardType, item.BoardName, item.Price)
 		}
+	})
+}
+
+func TestTdxKLineApi_GetMACCapitalFlow(t *testing.T) {
+	api := NewTdxKLineApi()
+
+	t.Run("A股-贵州茅台", func(t *testing.T) {
+		row := api.GetMACCapitalFlow("600519.SH")
+		if row == nil {
+			t.Fatal("GetMACCapitalFlow returned nil for 600519.SH")
+		}
+		t.Logf("600519.SH 资金流向:")
+		t.Logf("  今日主力流入=%.0f 流出=%.0f 净流入=%.0f", row.TodayMainIn, row.TodayMainOut, row.TodayMainNetIn)
+		t.Logf("  今日散户流入=%.0f 流出=%.0f 净流入=%.0f", row.TodayRetailIn, row.TodayRetailOut, row.TodayRetailNetIn)
+		t.Logf("  5日主力买入=%.0f 卖出=%.0f 净流入=%.0f", row.FiveDayMainBuy, row.FiveDayMainSell, row.FiveDayMainNetIn)
+		t.Logf("  5日超大单=%.0f 大单=%.0f 中单=%.0f 小单=%.0f", row.FiveDaySuperNet, row.FiveDayLargeNet, row.FiveDayMediumNet, row.FiveDaySmallNet)
+	})
+
+	t.Run("A股-平安银行", func(t *testing.T) {
+		row := api.GetMACCapitalFlow("000001.SZ")
+		if row == nil {
+			t.Fatal("GetMACCapitalFlow returned nil for 000001.SZ")
+		}
+		t.Logf("000001.SZ 今日主力净流入=%.0f 散户净流入=%.0f 5日主力净流入=%.0f",
+			row.TodayMainNetIn, row.TodayRetailNetIn, row.FiveDayMainNetIn)
+	})
+
+	t.Run("港股-腾讯控股", func(t *testing.T) {
+		// MAC主客户端不一定支持港股资金流向，失败时返回 nil，不视为用例失败
+		row := api.GetMACCapitalFlow("00700.HK")
+		if row == nil {
+			t.Logf("00700.HK 资金流向: 获取失败或无数据（MAC可能不支持港股）")
+			return
+		}
+		t.Logf("00700.HK 今日主力净流入=%.0f 5日主力净流入=%.0f", row.TodayMainNetIn, row.FiveDayMainNetIn)
 	})
 }

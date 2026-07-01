@@ -8,7 +8,7 @@ require (
 	github.com/bytedance/sonic v1.15.2
 	github.com/chromedp/cdproto v0.0.0-20260427013145-5737772c319b
 	github.com/chromedp/chromedp v0.15.1
-	github.com/cloudwego/eino v0.9.10
+	github.com/cloudwego/eino v0.9.12
 	github.com/cloudwego/eino-ext/components/model/ark v0.1.68
 	github.com/cloudwego/eino-ext/components/model/claude v0.1.20
 	github.com/cloudwego/eino-ext/components/model/deepseek v0.1.6

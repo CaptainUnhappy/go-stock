@@ -22,6 +22,7 @@ func init() {
 	registerToolHandler("GetTdxXDXRInfo", handleGetTdxXDXRInfo)
 	registerToolHandler("GetTdxCompanyCategory", handleGetTdxCompanyCategory)
 	registerToolHandler("GetTdxSymbolBelongBoard", handleGetTdxSymbolBelongBoard)
+	registerToolHandler("GetMACCapitalFlow", handleGetMACCapitalFlow)
 }
 
 // handleGetIndustryValuation 处理 GetIndustryValuation 工具调用
@@ -151,6 +152,53 @@ func handleGetTdxSymbolBelongBoard(o *OpenAi, funcArguments string, ctx *ToolCon
 			return stockCode + "：获取所属板块信息失败或无数据"
 		}
 		return util.MarkdownTableWithTitle(stockCode+" 所属板块（通达信MAC）", *items)
+	})
+
+	appendToolMessages(
+		ctx.Messages,
+		ctx.CurrentAIContent.String(),
+		ctx.ReasoningContentText.String(),
+		ctx.CurrentCallID,
+		ctx.FuncName,
+		funcArguments,
+		md,
+	)
+
+	return nil
+}
+
+// handleGetMACCapitalFlow 处理 GetMACCapitalFlow 工具调用
+func handleGetMACCapitalFlow(o *OpenAi, funcArguments string, ctx *ToolContext) error {
+	ctx.Ch <- map[string]any{
+		"code":              1,
+		"question":          ctx.Question,
+		"chatId":            ctx.StreamResponseID,
+		"model":             ctx.Model,
+		"reasoning_content": "\r\n```\r\n🔧 开始调用工具：GetMACCapitalFlow，\n参数：" + funcArguments + "\r\n```\r\n",
+		"time":              time.Now().Format(time.DateTime),
+	}
+
+	codes := parseStockCodesFromToolArgs(funcArguments, "stockCode")
+	if len(codes) == 0 {
+		appendToolMessages(
+			ctx.Messages,
+			ctx.CurrentAIContent.String(),
+			ctx.ReasoningContentText.String(),
+			ctx.CurrentCallID,
+			ctx.FuncName,
+			funcArguments,
+			"参数 stockCode 或 stockCodes 不能为空，请传入股票代码（多只可用英文逗号分隔）。",
+		)
+		return nil
+	}
+
+	api := NewTdxKLineApi()
+	md := parallelStockToolSections(codes, func(stockCode string) string {
+		row := api.GetMACCapitalFlow(stockCode)
+		if row == nil {
+			return stockCode + "：获取资金流向数据失败或无数据"
+		}
+		return util.MarkdownTableWithTitle(stockCode+" 资金流向（通达信MAC）", []MACCapitalFlowData{*row})
 	})
 
 	appendToolMessages(

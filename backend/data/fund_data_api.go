@@ -464,7 +464,7 @@ func (f *FundApi) searchFundOnline(key string) {
 		Datas []struct {
 			Code string `json:"Code"`
 			Name string `json:"Name"`
-			Type string `json:"FundBaseInfo"`
+			Type string `json:"CATEGORYDESC"`
 		} `json:"Datas"`
 	}
 	if err := json.Unmarshal(resp.Body(), &result); err != nil {
@@ -1362,7 +1362,7 @@ func IsOnExchangeFund(code string) bool {
 	}
 	prefix := code[:2]
 	switch prefix {
-	case "15", "16", "50", "51", "52":
+	case "15", "16", "50", "51", "52", "53", "56", "58":
 		return true
 	default:
 		return false

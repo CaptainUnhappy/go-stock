@@ -241,7 +241,7 @@ const allTableData = computed(() => {
 // 客户端分页配置
 const allTablePagination = reactive({
   page: 1,
-  pageSize: 20,
+  pageSize: 50,
   showSizePicker: true,
   pageSizes: [10, 20, 50, 100],
   prefix({ itemCount }) {
@@ -284,6 +284,7 @@ const allTableColumns = [
   {
     title: '涨跌幅', key: 'changePercent', width: 90,
     sorter: (a, b) => Number(a.changePercent) - Number(b.changePercent),
+    defaultSortOrder: 'descend',
     render(row) {
       const sign = row.changePercent >= 0 ? '+' : ''
       return h(NText, { type: row.type }, { default: () => `${sign}${Number(row.changePercent).toFixed(3)}%` })
@@ -939,6 +940,10 @@ function SendDanmu() {
   ws.value.send(data.name)
 }
 
+// 在线搜索防抖（用于场内 ETF 等本地缓存未覆盖的标的）
+let stockSearchTimer = null
+let stockSearchSeq = 0
+
 function getStockList(value) {
 
 
@@ -965,6 +970,26 @@ function getStockList(value) {
     blinkBorder(findId)
   }
 
+  // 非空关键字时，防抖调用后端在线搜索（含场内 ETF：本地 FundBasic 缺失时会在线拉取），
+  // 合并本地 stockList 未覆盖的结果，使 513310 等场内基金可被搜到并关注
+  if (stockSearchTimer) clearTimeout(stockSearchTimer)
+  if (!value) return
+  const seq = ++stockSearchSeq
+  stockSearchTimer = setTimeout(() => {
+    GetStockList(value).then(res => {
+      if (seq !== stockSearchSeq || !res || !res.length) return
+      const existing = new Set(options.value.map(o => o.value))
+      const extra = []
+      for (const item of res) {
+        if (item.ts_code && !existing.has(item.ts_code)) {
+          extra.push({ label: (item.name || '') + " - " + item.ts_code, value: item.ts_code })
+          existing.add(item.ts_code)
+        }
+        if (extra.length >= 20) break
+      }
+      if (extra.length) options.value = options.value.concat(extra)
+    }).catch(() => {})
+  }, 300)
 
 }
 
@@ -2589,6 +2614,8 @@ function searchStockReport(stockCode) {
           :row-key="(row) => row.key"
           size="small"
           striped
+          flex-height
+          style="height: calc(100vh - 190px);"
         />
         <n-grid v-else :x-gap="8" :cols="3" :y-gap="8">
           <n-gi :id="result['股票代码']+'_gi'" v-for="result in allTableData" :key="result.key" style="margin-left: 2px;">

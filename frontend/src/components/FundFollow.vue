@@ -16,6 +16,7 @@ import {
 import {Environment} from "../../wailsjs/runtime";
 import vueDanmaku from 'vue3-danmaku'
 import FundKlineChart from "./FundKlineChart.vue";
+import StockLightweightKlineChart from "./StockLightweightKlineChart.vue";
 
 const danmus = ref([])
 const ws = ref(null)
@@ -24,6 +25,10 @@ const message = useMessage()
 const chartModalShow = ref(false)
 const chartFundCode = ref('')
 const chartFundName = ref('')
+// 当前弹窗基金是否为场内基金（ETF）；场内用 StockLightweightKlineChart，场外用 FundKlineChart
+const chartOnExchange = computed(() => isOnExchangeFund(chartFundCode.value))
+// 场内基金代码转东方财富格式，喂给 StockLightweightKlineChart
+const chartEastMoneyCode = computed(() => fundCodeToEastMoney(chartFundCode.value))
 const netValueData = ref([])
 const netValueLoading = ref(false)
 const darkTheme = ref(false)
@@ -267,7 +272,16 @@ function loadNetValueHistory(code) {
 
 function isOnExchangeFund(code) {
   const p = code?.substring(0, 2)
-  return ['15', '16', '50', '51', '52'].includes(p)
+  return ['15', '16', '50', '51', '52', '53', '56', '58'].includes(p)
+}
+
+// 场内基金代码（纯数字）转东方财富格式（如 513310 → 513310.SH，159915 → 159915.SZ）
+// 用于把基金代码喂给 StockLightweightKlineChart（其 code prop 接收东方财富格式）
+function fundCodeToEastMoney(code) {
+  if (!code) return ''
+  const c = String(code)
+  if (/^(5|6)/.test(c)) return c + '.SH'
+  return c + '.SZ'
 }
 
 function rateType(rate) {
@@ -467,8 +481,16 @@ function blinkBorder(findId) {
     style="width: 90vw; max-width: 1100px;"
     :mask-closable="true"
   >
+    <StockLightweightKlineChart
+      v-if="chartFundCode && chartOnExchange"
+      :key="chartFundCode"
+      :code="chartEastMoneyCode"
+      :stock-name="chartFundName"
+      :dark-theme="darkTheme"
+      :chart-height="400"
+    />
     <FundKlineChart
-      v-if="chartFundCode"
+      v-else-if="chartFundCode"
       :key="chartFundCode"
       :fund-code="chartFundCode"
       :fund-name="chartFundName"

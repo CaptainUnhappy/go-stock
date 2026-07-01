@@ -299,6 +299,73 @@ func (t *TdxKLineApi) GetCallAuctionLatest(stockCode string) *TdxCallAuctionData
 	return last
 }
 
+// convertMACAuctionData 将 gotdx 的 MAC 竞价数据（港美股，proto.MACAuctionItem）转换为统一的 TdxCallAuctionData。
+// 与 A股的 proto.AuctionData 差异：Unmatched 为 int32（带符号），用 %d 即可正确格式化。
+func convertMACAuctionData(list []proto.MACAuctionItem) []TdxCallAuctionData {
+	result := make([]TdxCallAuctionData, 0, len(list))
+	for _, item := range list {
+		flagStr := "买盘"
+		if item.Flag < 0 {
+			flagStr = "卖盘"
+		}
+		result = append(result, TdxCallAuctionData{
+			Time:      item.Time,
+			Price:     fmt.Sprintf("%.2f", item.Price),
+			Matched:   fmt.Sprintf("%d", item.Matched),
+			Unmatched: fmt.Sprintf("%d", item.Unmatched),
+			Flag:      flagStr,
+		})
+	}
+	return result
+}
+
+// GetMACCallAuction 通过 MAC 主客户端（gotdx.NewMAC，端口7709）获取港美股集合竞价明细。
+// MACAuction 走 MAC 主行情协议（0x123D），用 market+code 寻址，必须用 macClient，不能用 macExClient。
+func (t *TdxKLineApi) GetMACCallAuction(stockCode string, start uint32, count uint32) *[]TdxCallAuctionData {
+	result := &[]TdxCallAuctionData{}
+	if err := t.ensureMACClient(); err != nil {
+		logger.SugaredLogger.Errorf("TdxKLine ensureMACClient error: %v", err)
+		return result
+	}
+	if count <= 0 {
+		count = 500
+	}
+	market, code := tdxMarketFromStockCode(stockCode)
+
+	t.macMu.Lock()
+	list, err := t.macClient.MACAuction(market, code, start, count)
+	t.macMu.Unlock()
+
+	if err != nil {
+		logger.SugaredLogger.Warnf("TdxKLine MACAuction error: %v, reconnecting...", err)
+		if reconnectErr := t.reconnectMAC(); reconnectErr != nil {
+			logger.SugaredLogger.Errorf("TdxKLine reconnectMAC error: %v", reconnectErr)
+			return result
+		}
+		t.macMu.Lock()
+		list, err = t.macClient.MACAuction(market, code, start, count)
+		t.macMu.Unlock()
+		if err != nil {
+			logger.SugaredLogger.Errorf("TdxKLine MACAuction retry error: %v", err)
+			return result
+		}
+	}
+
+	converted := convertMACAuctionData(list)
+	return &converted
+}
+
+// GetCallAuctionAuto 统一集合竞价调度入口：港股/美股走 MAC 主客户端的 MACAuction，A股走主行情客户端的 StockAuction。
+func (t *TdxKLineApi) GetCallAuctionAuto(stockCode string, start uint32, count uint32) *[]TdxCallAuctionData {
+	market, _ := tdxMarketFromStockCode(stockCode)
+	// 港股(MarketHK)/美股(MarketUSA) 走 MAC 主客户端的 MACAuction
+	if market == uint8(types.MarketHK) || market == uint8(types.MarketUSA) {
+		return t.GetMACCallAuction(stockCode, start, count)
+	}
+	// A股(SH/SZ/BJ) 走主行情客户端的 StockAuction
+	return t.GetCallAuction(stockCode, start, count)
+}
+
 // tdxAdjustFromFlag 将前端传入的复权标识字符串映射为 gotdx 的复权常量。
 // adjustFlag 取值："qfq"→前复权(AdjustQFQ)、"hfq"→后复权(AdjustHFQ)、"none"/"0"→不复权(AdjustNone)。
 // 当 adjustFlag 为空或无法识别时，返回 legacyDefault，保持各调用方原有硬编码默认行为。
@@ -429,10 +496,9 @@ func tdxAggregationParams(klt string) (srcKlt string, n int) {
 }
 
 // GetMACKLineData 通过 MAC 行情接口获取 K 线数据
-// A股使用 MAC 客户端，港美股使用 MAC Ex 客户端
-// 港股同时在 MAC 和 MAC Ex 上尝试
+// A股使用 MAC 主客户端（MACSymbolBars），港美股使用 MAC Ex 扩展行情客户端（ExKLine2）
 // adjustFlag 可选，控制复权类型："qfq"前复权(默认A股)、"hfq"后复权、"none"/"0"不复权(默认港股)；
-// 港美股 ExKLine2 协议不支持复权参数，adjustFlag 对其无效。
+// 港美股 ExKLine2 协议不支持复权参数，adjustFlag 对其无效；东方财富降级源支持复权。
 func (t *TdxKLineApi) GetMACKLineData(stockCode string, klt string, limit int, adjustFlag ...string) *[]KLineData {
 	if limit <= 0 {
 		limit = 500
@@ -442,16 +508,10 @@ func (t *TdxKLineApi) GetMACKLineData(stockCode string, klt string, limit int, a
 
 	// 判断是否港美股
 	if exMarket, exCode, ok := macExMarketFromStockCode(stockCode); ok {
-		// 港股：先尝试 MAC 主服务器（MarketHK=3），再尝试扩展行情 ExKLine2（主板=31/创业板=48）
-		if IsHKStockCode(stockCode) {
-			// 港股 MAC 主客户端默认不复权
-			hkAdjust := tdxAdjustFromFlag(flag, types.AdjustNone)
-			data := t.getMACMainKLineData(uint8(types.MarketHK), exCode, klt, limit, hkAdjust)
-			if data != nil && len(*data) > 0 {
-				return data
-			}
-		}
-		// MAC Ex 扩展行情（ExKLine2 协议不支持复权参数，此处忽略 adjustFlag）
+		// 港美股统一走 MAC Ex 扩展行情（ExKLine2，主板=31/创业板=48/美股=74）。
+		// 注意：MAC 主客户端（MACSymbolBars）不支持港美股 market=3/4，会忽略 market 参数，
+		// 把 5 位港股代码当 A 股 6 位代码处理（如 02202→002202.SZ 金风科技），返回错误的非空数据，
+		// 因此港美股不再尝试 MAC 主源，直接走 ExKLine2（ExKLine2 协议不支持复权参数，忽略 adjustFlag）。
 		return t.getMACExKLineData(exMarket, exCode, klt, limit)
 	}
 
@@ -518,53 +578,6 @@ func (t *TdxKLineApi) getMACMainKLineDataEx(stockCode string, klt string, limit 
 		converted = *AggregateKLineEveryN(&converted, aggN)
 	}
 
-	return &converted
-}
-
-// getMACMainKLineData 通过 MAC 主客户端获取K线（指定 market 和 code），adjust 指定复权类型（港股默认不复权 AdjustNone）
-func (t *TdxKLineApi) getMACMainKLineData(market uint8, code string, klt string, limit int, adjust uint16) *[]KLineData {
-	result := &[]KLineData{}
-	if err := t.ensureMACClient(); err != nil {
-		logger.SugaredLogger.Errorf("TdxKLine ensureMACClient error: %v", err)
-		return result
-	}
-
-	aggSrc, aggN := tdxAggregationParams(klt)
-	actualKlt := klt
-	if aggSrc != "" {
-		actualKlt = aggSrc
-	}
-
-	klineType := tdxKLineTypeFromKlt(actualKlt)
-	if klineType < 0 {
-		return result
-	}
-
-	fetchCount := uint32(limit)
-	if aggN > 1 {
-		fetchCount = uint32(limit * aggN)
-		if fetchCount > 8000 {
-			fetchCount = 8000
-		}
-	}
-
-	t.macMu.Lock()
-	bars, err := t.macClient.MACSymbolBars(market, code, uint16(klineType), 1, 0, fetchCount, adjust)
-	t.macMu.Unlock()
-
-	if err != nil {
-		logger.SugaredLogger.Debugf("TdxKLine MAC main MACSymbolBars for HK error: %v", err)
-		return result
-	}
-
-	if len(bars) == 0 {
-		return result
-	}
-
-	converted := convertMACSymbolBar(bars)
-	if aggN > 1 {
-		converted = *AggregateKLineEveryN(&converted, aggN)
-	}
 	return &converted
 }
 
@@ -1106,6 +1119,75 @@ func (t *TdxKLineApi) GetMACSymbolBelongBoard(stockCode string) *[]MACBelongBoar
 	return &converted
 }
 
+// MACCapitalFlowData 通达信MAC资金流向数据（个股，单位：元）
+type MACCapitalFlowData struct {
+	StockCode        string  `md:"股票代码"`
+	TodayMainIn      float64 `md:"今日主力流入"`
+	TodayMainOut     float64 `md:"今日主力流出"`
+	TodayMainNetIn   float64 `md:"今日主力净流入"`
+	TodayRetailIn    float64 `md:"今日散户流入"`
+	TodayRetailOut   float64 `md:"今日散户流出"`
+	TodayRetailNetIn float64 `md:"今日散户净流入"`
+	FiveDayMainBuy   float64 `md:"5日主力买入"`
+	FiveDayMainSell  float64 `md:"5日主力卖出"`
+	FiveDayMainNetIn float64 `md:"5日主力净流入"`
+	FiveDaySuperNet  float64 `md:"5日超大单净流入"`
+	FiveDayLargeNet  float64 `md:"5日大单净流入"`
+	FiveDayMediumNet float64 `md:"5日中单净流入"`
+	FiveDaySmallNet  float64 `md:"5日小单净流入"`
+}
+
+// GetMACCapitalFlow 通过通达信MAC接口获取个股资金流向数据，
+// 包括今日主力/散户流入流出及净流入、5日主力买卖净额与超大/大/中/小单净流入。
+// 主要支持 A 股；港美股 MAC 主客户端不一定支持，失败时返回 nil。
+func (t *TdxKLineApi) GetMACCapitalFlow(stockCode string) *MACCapitalFlowData {
+	if err := t.ensureMACClient(); err != nil {
+		logger.SugaredLogger.Errorf("TdxKLine ensureMACClient error: %v", err)
+		return nil
+	}
+
+	market, code := tdxMarketFromStockCode(stockCode)
+
+	t.macMu.Lock()
+	reply, err := t.macClient.MACCapitalFlow(market, code)
+	t.macMu.Unlock()
+
+	if err != nil {
+		logger.SugaredLogger.Warnf("TdxKLine MACCapitalFlow error: %v, reconnecting...", err)
+		if reconnectErr := t.reconnectMAC(); reconnectErr != nil {
+			logger.SugaredLogger.Errorf("TdxKLine reconnectMAC error: %v", reconnectErr)
+			return nil
+		}
+		t.macMu.Lock()
+		reply, err = t.macClient.MACCapitalFlow(market, code)
+		t.macMu.Unlock()
+		if err != nil {
+			logger.SugaredLogger.Errorf("TdxKLine MACCapitalFlow retry error: %v", err)
+			return nil
+		}
+	}
+
+	if reply == nil {
+		return nil
+	}
+	return &MACCapitalFlowData{
+		StockCode:        stockCode,
+		TodayMainIn:      reply.TodayMainIn,
+		TodayMainOut:     reply.TodayMainOut,
+		TodayMainNetIn:   reply.TodayMainNetIn,
+		TodayRetailIn:    reply.TodayRetailIn,
+		TodayRetailOut:   reply.TodayRetailOut,
+		TodayRetailNetIn: reply.TodayRetailNetIn,
+		FiveDayMainBuy:   reply.FiveDayMainBuy,
+		FiveDayMainSell:  reply.FiveDayMainSell,
+		FiveDayMainNetIn: reply.FiveDayMainNetIn,
+		FiveDaySuperNet:  reply.FiveDaySuperNet,
+		FiveDayLargeNet:  reply.FiveDayLargeNet,
+		FiveDayMediumNet: reply.FiveDayMediumNet,
+		FiveDaySmallNet:  reply.FiveDaySmallNet,
+	}
+}
+
 // TdxStockBasic 通达信返回的股票基础信息（代码+名称+昨收+小数位+量单位）
 type TdxStockBasic struct {
 	StockCode    string  // 带市场前缀的小写代码，如 sh600519 / sz000001 / bj430047
@@ -1119,7 +1201,7 @@ type TdxStockBasic struct {
 
 // GetAllStockList 通过通达信标准行情接口拉取沪深京全市场股票代码+名称列表。
 // 即时性高（新股上市当天即可见），不会被封 IP。仅覆盖 A 股，不含港美股。
-// 返回结果按市场顺序：深圳 -> 上海 -> 北京，已用 types.IsStock 过滤掉指数/基金/债券等非股票标的。
+// 返回结果按市场顺序：深圳 -> 上海 -> 北京，已用 types.IsStock 过滤掉指数/债券等非股票标的，场内 ETF 由 IsOnExchangeFund 放行。
 func (t *TdxKLineApi) GetAllStockList() *[]TdxStockBasic {
 	result := &[]TdxStockBasic{}
 	if err := t.ensureClient(); err != nil {
@@ -1145,7 +1227,7 @@ func (t *TdxKLineApi) GetAllStockList() *[]TdxStockBasic {
 	return result
 }
 
-// fetchStockListByMarket 拉取单个市场的全部证券列表，过滤出股票后追加到 result
+// fetchStockListByMarket 拉取单个市场的全部证券列表，过滤出股票与场内 ETF 后追加到 result
 func (t *TdxKLineApi) fetchStockListByMarket(market types.Market, result *[]TdxStockBasic) error {
 	t.mu.Lock()
 	items, err := t.client.StockAll(market.Uint8())
@@ -1156,9 +1238,9 @@ func (t *TdxKLineApi) fetchStockListByMarket(market types.Market, result *[]TdxS
 
 	marketStr := market.String()
 	for _, item := range items {
-		// 用 types.IsStock 过滤指数/基金/债券等非股票标的（要求 代码.SH/SZ/BJ 格式）
+		// 用 types.IsStock 过滤指数/债券等非股票标的；场内 ETF 另由 IsOnExchangeFund 放行（要求 代码.SH/SZ/BJ 格式）
 		symbol := fmt.Sprintf("%s.%s", item.Code, marketStr)
-		if !types.IsStock(symbol) {
+		if !types.IsStock(symbol) && !IsOnExchangeFund(item.Code) {
 			continue
 		}
 		*result = append(*result, TdxStockBasic{
