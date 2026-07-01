@@ -1525,8 +1525,8 @@ func (receiver StockDataApi) GetStockMinutePriceData(stockCode string) (*[]Minut
 	minuteDatas := &[]MinuteData{}
 
 	if err != nil {
-		//logger.SugaredLogger.Errorf("err:%s", err.Error())
-		return minuteDatas, date
+		logger.SugaredLogger.Warnf("GetStockMinutePriceData tencent source failed: code=%s err=%s", stockCode, err.Error())
+		return receiver.getStockMinutePriceDataFromKLine(stockCode)
 	}
 	//logger.SugaredLogger.Infof("resp:%s", resp.Body())
 	json.Unmarshal(resp.Body(), &res)
@@ -1561,6 +1561,55 @@ func (receiver StockDataApi) GetStockMinutePriceData(stockCode string) (*[]Minut
 				}
 			}
 		}
+	}
+	if len(*minuteDatas) == 0 {
+		return receiver.getStockMinutePriceDataFromKLine(stockCode)
+	}
+	return minuteDatas, date
+}
+
+func (receiver StockDataApi) getStockMinutePriceDataFromKLine(stockCode string) (*[]MinuteData, string) {
+	result := FetchKLineWithFallback(stockCode, "", "1", 242, "", "none")
+	minuteDatas := &[]MinuteData{}
+	if result == nil || result.Data == nil || len(*result.Data) == 0 {
+		return minuteDatas, ""
+	}
+	kLines := append([]KLineData(nil), (*result.Data)...)
+	sort.SliceStable(kLines, func(i, j int) bool {
+		return strings.TrimSpace(kLines[i].Day) < strings.TrimSpace(kLines[j].Day)
+	})
+	latestDate := ""
+	for i := len(kLines) - 1; i >= 0; i-- {
+		if parts := strings.Fields(strings.TrimSpace(kLines[i].Day)); len(parts) >= 2 {
+			latestDate = parts[0]
+			break
+		}
+	}
+	date := ""
+	cumulativeVolume := float64(0)
+	cumulativeAmount := float64(0)
+	for _, k := range kLines {
+		day := strings.TrimSpace(k.Day)
+		parts := strings.Fields(day)
+		t := day
+		if len(parts) >= 2 {
+			if latestDate != "" && parts[0] != latestDate {
+				continue
+			}
+			date = parts[0]
+			t = parts[1]
+		}
+		price, _ := convertor.ToFloat(k.Close)
+		volume, _ := convertor.ToFloat(k.Volume)
+		amount, _ := convertor.ToFloat(k.Amount)
+		cumulativeVolume += volume
+		cumulativeAmount += amount
+		*minuteDatas = append(*minuteDatas, MinuteData{
+			Time:   t,
+			Price:  price,
+			Volume: cumulativeVolume,
+			Amount: cumulativeAmount,
+		})
 	}
 	return minuteDatas, date
 }
