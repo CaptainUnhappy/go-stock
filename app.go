@@ -149,6 +149,67 @@ func (a *App) CheckDeviceBinding(token string, apiBase string) map[string]any {
 	return result
 }
 
+// PromptPlazaRequest 以 Go 后端代理的方式请求提示词广场 API，
+// 规避 macOS WKWebView 的 App Transport Security 对明文 HTTP 的限制，
+// 前端不应直接 fetch 远程广场接口。
+// method: GET/POST/PUT/DELETE
+// apiBase: 广场 API 根地址，如 http://go-stock.sparkmemory.top:1918/api
+// path: 接口路径，如 /auth/register
+// query: URL 查询参数，可为 nil；nil 值与空字符串会被跳过，与前端原 fetch 行为一致
+// body: 请求体 JSON 字符串，可为空
+// token: 鉴权 token，可为空
+// 返回响应体解析后的 map（含 code/message/data），网络或解析失败时 code != 0。
+func (a *App) PromptPlazaRequest(method, apiBase, path string, query map[string]any, body, token string) map[string]any {
+	result := map[string]any{"code": -1, "message": "", "data": nil}
+	if apiBase == "" {
+		result["message"] = "apiBase 为空"
+		return result
+	}
+	url := strings.TrimRight(apiBase, "/") + path
+	req := data.SharedHTTPClient.R().SetHeader("Content-Type", "application/json")
+	if token != "" {
+		req = req.SetHeader("Authorization", "Bearer "+token)
+	}
+	if len(query) > 0 {
+		params := make(map[string]string, len(query))
+		for k, v := range query {
+			if v == nil {
+				continue
+			}
+			s := fmt.Sprintf("%v", v)
+			if s == "" {
+				continue
+			}
+			params[k] = s
+		}
+		if len(params) > 0 {
+			req = req.SetQueryParams(params)
+		}
+	}
+	if body != "" {
+		req = req.SetBody(body)
+	}
+
+	resp, err := req.Execute(strings.ToUpper(method), url)
+	if err != nil {
+		result["message"] = err.Error()
+		return result
+	}
+
+	var respData map[string]any
+	if err := json.Unmarshal(resp.Body(), &respData); err != nil {
+		result["message"] = "响应解析失败: " + err.Error()
+		return result
+	}
+	if respData == nil {
+		respData = map[string]any{}
+	}
+	if _, ok := respData["code"]; !ok {
+		respData["code"] = -1
+	}
+	return respData
+}
+
 func (a *App) QuitApp() {
 	if a.ctx != nil {
 		if a.cron != nil {
@@ -2310,7 +2371,8 @@ func (a *App) GetStockEastMoneyKLinePage(stockCode, stockName string, klt string
 
 // GetStockKLineWithFallback 多数据源自动切换 K 线：优先东方财富，不可用时自动切换新浪财经。
 // 返回 KLineSourceResult，包含 data（K 线数组）和 source（实际使用的数据源标识：eastmoney / sina）。
-func (a *App) GetStockKLineWithFallback(stockCode, stockName string, klt string, limit int) *data.KLineSourceResult {
+// adjustFlag 控制复权类型："qfq"前复权、"hfq"后复权、"none"/"0"不复权、""沿用各数据源默认行为。
+func (a *App) GetStockKLineWithFallback(stockCode, stockName string, klt string, limit int, adjustFlag string) *data.KLineSourceResult {
 	if limit <= 0 {
 		limit = 500
 	}
@@ -2321,12 +2383,13 @@ func (a *App) GetStockKLineWithFallback(stockCode, stockName string, klt string,
 	if klt == "" {
 		klt = "101"
 	}
-	return data.FetchKLineWithFallback(stockCode, stockName, klt, limit, "")
+	return data.FetchKLineWithFallback(stockCode, stockName, klt, limit, "", adjustFlag)
 }
 
 // GetStockKLinePageWithFallback 多数据源自动切换 K 线（分页）：优先东方财富，不可用时自动切换新浪财经。
 // end 参数仅对东方财富有效；新浪数据源不支持分页，将返回最新一段数据。
-func (a *App) GetStockKLinePageWithFallback(stockCode, stockName string, klt string, limit int, end string) *data.KLineSourceResult {
+// adjustFlag 控制复权类型："qfq"前复权、"hfq"后复权、"none"/"0"不复权、""沿用各数据源默认行为。
+func (a *App) GetStockKLinePageWithFallback(stockCode, stockName string, klt string, limit int, end string, adjustFlag string) *data.KLineSourceResult {
 	if limit <= 0 {
 		limit = 500
 	}
@@ -2338,7 +2401,7 @@ func (a *App) GetStockKLinePageWithFallback(stockCode, stockName string, klt str
 		klt = "101"
 	}
 	end = strings.TrimSpace(end)
-	return data.FetchKLineWithFallback(stockCode, stockName, klt, limit, end)
+	return data.FetchKLineWithFallback(stockCode, stockName, klt, limit, end, adjustFlag)
 }
 
 // GetChipDistribution 获取/计算股票筹码分布（筹码图）数据（用于前端绘图）。

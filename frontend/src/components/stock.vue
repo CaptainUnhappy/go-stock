@@ -40,10 +40,13 @@ import {
 import {
   NAvatar,
   NButton,
+  NDataTable,
+  NDropdown,
   NFlex,
   NForm,
   NFormItem,
   NInputNumber,
+  NTag,
   NText,
   useDialog,
   useMessage,
@@ -179,6 +182,11 @@ const danmakuColor = computed(() => {
   return data.darkTheme ? 'color:#fff' : 'color:#000'
 })
 
+// 顶部页签固定吸顶时的背景色（与页面 body 背景一致，避免滚动时内容透出）
+const tabNavBgColor = computed(() => {
+  return data.darkTheme ? 'rgb(16, 16, 20)' : '#ffffff'
+})
+
 const icon = ref('https://raw.githubusercontent.com/ArvinLovegood/go-stock/master/build/appicon.png');
 
 const sortedResults = computed(() => {
@@ -205,6 +213,136 @@ const groupResults = computed(() => {
   }
   return group
 })
+
+// ——「全部」标签页：表格分页 + 搜索 ——
+const tableSearchKeyword = ref('')
+
+// 将 sortedResults 对象转为数组，并按关键字过滤（名称/代码）
+const allTableData = computed(() => {
+  const arr = []
+  for (const key in sortedResults.value) {
+    arr.push(sortedResults.value[key])
+  }
+  const kw = tableSearchKeyword.value.trim().toLowerCase()
+  if (!kw) return arr
+  return arr.filter(item => {
+    const name = String(item['股票名称'] || '').toLowerCase()
+    const code = String(item['股票代码'] || '').toLowerCase()
+    return name.includes(kw) || code.includes(kw)
+  })
+})
+
+// 客户端分页配置
+const allTablePagination = reactive({
+  page: 1,
+  pageSize: 20,
+  showSizePicker: true,
+  pageSizes: [10, 20, 50, 100],
+  prefix({ itemCount }) {
+    return `共 ${itemCount} 只`
+  },
+  onChange: (page) => { allTablePagination.page = page },
+  onUpdatePageSize: (pageSize) => {
+    allTablePagination.pageSize = pageSize
+    allTablePagination.page = 1
+  }
+})
+
+// 搜索关键字变化时回到第一页
+watch(tableSearchKeyword, () => { allTablePagination.page = 1 })
+
+// 「全部」标签页表格列定义（render 用 h()；行高频刷新由 allTableData computed 驱动，与原卡片一致）
+const allTableColumns = [
+  {
+    title: '名称/代码', key: '股票名称', width: 150,
+    sorter: (a, b) => String(a['股票名称']).localeCompare(String(b['股票名称'])),
+    render(row) {
+      return h('div', { style: 'display:flex; flex-direction:column; line-height:1.3;' }, [
+        h(NText, { type: row.type, strong: true }, { default: () => row['股票名称'] }),
+        h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => row['股票代码'] })
+      ])
+    }
+  },
+  {
+    title: '当前价', key: '当前价格', width: 110,
+    sorter: (a, b) => Number(a['当前价格']) - Number(b['当前价格']),
+    render(row) {
+      const children = [h(NText, { type: row.type }, { default: () => Number(row['当前价格']).toFixed(2) })]
+      if (row['盘前盘后'] > 0) {
+        children.push(h('div', { style: 'font-size:12px;' },
+          `${row['盘前盘后']} ${row['盘前盘后涨跌幅']}%`))
+      }
+      return h('div', { style: 'display:flex; flex-direction:column;' }, children)
+    }
+  },
+  {
+    title: '涨跌幅', key: 'changePercent', width: 90,
+    sorter: (a, b) => Number(a.changePercent) - Number(b.changePercent),
+    render(row) {
+      const sign = row.changePercent >= 0 ? '+' : ''
+      return h(NText, { type: row.type }, { default: () => `${sign}${Number(row.changePercent).toFixed(3)}%` })
+    }
+  },
+  {
+    title: '最高/最低', key: '今日最高价', width: 160,
+    sorter: (a, b) => Number(a['今日最高价']) - Number(b['今日最高价']),
+    render(row) {
+      return h('div', { style: 'font-size:12px; line-height:1.4;' }, [
+        h('div', null, `高 ${row['今日最高价']} (${row.highRate}%)`),
+        h('div', null, `低 ${row['今日最低价']} (${row.lowRate}%)`)
+      ])
+    }
+  },
+  {
+    title: '昨收/今开', key: '昨日收盘价', width: 120,
+    sorter: (a, b) => Number(a['昨日收盘价']) - Number(b['昨日收盘价']),
+    render(row) {
+      return h('div', { style: 'font-size:12px; line-height:1.4;' }, [
+        h('div', null, `昨收 ${row['昨日收盘价']}`),
+        h('div', null, `今开 ${row['今日开盘价']}`)
+      ])
+    }
+  },
+  {
+    title: '时间', key: '日期', width: 140,
+    sorter: (a, b) => String(a['日期'] + ' ' + a['时间']).localeCompare(String(b['日期'] + ' ' + b['时间'])),
+    render(row) {
+      return h('div', { style: 'font-size:12px;' }, `${row['日期']} ${row['时间']}`)
+    }
+  },
+  {
+    title: '操作', key: 'actions', width: 460, fixed: 'right',
+    render(row) {
+      const btns = [
+        h(NButton, { size: 'tiny', type: 'primary', secondary: true, onClick: () => showLightweightKline(row['股票代码'], row['股票名称']) }, { default: () => '多周期' }),
+        h(NButton, { size: 'tiny', type: 'error', secondary: true, style: 'margin-left:4px;', onClick: () => showK(row['股票代码'], row['股票名称']) }, { default: () => '日K' }),
+        h(NButton, { size: 'tiny', type: 'error', secondary: true, style: 'margin-left:4px;', onClick: () => showFenshi(row['股票代码'], row['股票名称'], row.changePercent) }, { default: () => '分时' })
+      ]
+      if (row['买一报价'] > 0) {
+        btns.push(h(NButton, { size: 'tiny', type: 'error', secondary: true, style: 'margin-left:4px;', onClick: () => showMoney(row['股票代码'], row['股票名称']) }, { default: () => '资金' }))
+      }
+      btns.push(h(NButton, { size: 'tiny', type: 'success', secondary: true, style: 'margin-left:4px;', onClick: () => search(row['股票代码'], row['股票名称']) }, { default: () => '详情' }))
+      if (row['买一报价'] > 0) {
+        btns.push(h(NButton, { size: 'tiny', type: 'success', secondary: true, style: 'margin-left:4px;', onClick: () => searchNotice(row['股票代码']) }, { default: () => '公告' }))
+        btns.push(h(NButton, { size: 'tiny', type: 'success', secondary: true, style: 'margin-left:4px;', onClick: () => searchStockReport(row['股票代码']) }, { default: () => '研报' }))
+      }
+      btns.push(h(NButton, { size: 'tiny', type: 'warning', secondary: true, style: 'margin-left:4px;', onClick: () => setStock(row['股票代码'], row['股票名称']) }, { default: () => '成本' }))
+      if (data.openAiEnable) {
+        btns.push(h(NButton, { size: 'tiny', type: 'warning', secondary: true, style: 'margin-left:4px;', onClick: () => aiCheckStock(row['股票名称'], row['股票代码']) }, { default: () => 'AI分析' }))
+      }
+      // 设置分组下拉（复用 groupList + AddStockGroupInfo，与卡片一致）
+      btns.push(h(NDropdown, {
+        trigger: 'click', options: groupList.value, keyField: 'ID', labelField: 'name',
+        onSelect: (groupId) => AddStockGroupInfo(groupId, row['股票代码'], row['股票名称'])
+      }, {
+        default: () => h(NButton, { size: 'tiny', type: 'warning', tertiary: true, style: 'margin-left:4px;' }, { default: () => '设置分组' })
+      }))
+      btns.push(h(NButton, { size: 'tiny', type: 'error', tertiary: true, style: 'margin-left:4px;', onClick: () => removeMonitor(row['股票代码'], row['股票名称'], row.key) }, { default: () => '取消关注' }))
+      return h('div', { style: 'display:flex; flex-wrap:wrap; gap:4px; align-items:center;' }, btns)
+    }
+  }
+]
+
 const showPopover = ref(false)
 // 拖拽相关变量
 const dragSourceIndex = ref(null)
@@ -2405,7 +2543,9 @@ function searchStockReport(stockCode) {
       </n-gradient-text>
     </template>
   </vue-danmaku>
-  <n-tabs type="card" style="--wails-draggable:no-drag" animated addable :data-currentGroupId="currentGroupId"
+  <n-tabs type="card" style="--wails-draggable:no-drag"
+          :style="{ '--stock-tab-nav-bg': tabNavBgColor }"
+          animated addable :data-currentGroupId="currentGroupId"
           :value="String(currentGroupId)" @add="addTab" @update:value="updateTab" placement="top" @close="(key)=>{delTab(key)}">
 
     <template #suffix>
@@ -2415,151 +2555,21 @@ function searchStockReport(stockCode) {
     </template>
 
     <n-tab-pane closable name="0" :tab="'全部'">
-      <n-grid :x-gap="8" :cols="3" :y-gap="8">
-        <n-gi :id="result['股票代码']+'_gi'" v-for="result in sortedResults" :key="result.key" style="margin-left: 2px;">
-          <n-card :data-sort="result.sort" :id="result['股票代码']" :data-code="result['股票代码']" :bordered="true"
-                  :title="result['股票名称']" :closable="false"
-                  @close="removeMonitor(result['股票代码'],result['股票名称'],result.key)">
-            <n-grid :cols="1" :y-gap="6">
-              <n-gi>
-                <n-text :type="result.type">
-                  <n-number-animation :duration="1000" :precision="2" :from="result['上次当前价格']"
-                                      :to="Number(result['当前价格'])"/>
-                  <n-tag size="small" :type="result.type" :bordered="false" v-if="result['盘前盘后']>0">
-                    ({{ result['盘前盘后'] }} {{ result['盘前盘后涨跌幅'] }}%)
-                  </n-tag>
-                </n-text>
-                <n-text style="padding-left: 10px;" :type="result.type">
-                  <n-number-animation :duration="1000" :precision="3" :from="result.lastChangePercent" :to="result.changePercent"/>
-                  %
-                </n-text>&nbsp;
-                <n-text size="small" v-if="result.costVolume>0" :type="result.type">
-                  <n-number-animation :duration="1000" :precision="2" :from="result.lastProfitAmountToday" :to="result.profitAmountToday"/>
-                </n-text>
-              </n-gi>
-            </n-grid>
-            <n-grid :cols="2" :y-gap="4" :x-gap="4">
-              <n-gi>
-                <n-text :type="'info'">{{ "最高 " + result["今日最高价"] + " " + result.highRate }}%</n-text>
-              </n-gi>
-              <n-gi>
-                <n-text :type="'info'">{{ "最低 " + result["今日最低价"] + " " + result.lowRate }}%</n-text>
-              </n-gi>
-              <n-gi>
-                <n-text :type="'info'">{{ "昨收 " + result["昨日收盘价"] }}</n-text>
-              </n-gi>
-              <n-gi>
-                <n-text :type="'info'">{{ "今开 " + result["今日开盘价"] }}</n-text>
-              </n-gi>
-            </n-grid>
-            <n-collapse accordion v-if="result['买一报价']>0">
-              <n-collapse-item title="盘口" name="1" v-if="result['买一报价']>0">
-                <template #header-extra>
-                  <n-flex justify="space-between">
-                    <n-text :type="'info'">{{ "买一 " + result["买一报价"] + '(' + result["买一申报"] + ")" }}</n-text>
-                    <n-text :type="'info'">{{ "卖一 " + result["卖一报价"] + '(' + result["卖一申报"] + ")" }}</n-text>
-                  </n-flex>
-                </template>
-                <n-grid :cols="2" :y-gap="4" :x-gap="4">
-                  <n-gi v-if="result['买一报价']>0">
-                    <n-text :type="'info'">{{ "买一 " + result["买一报价"] + '(' + result["买一申报"] + ")" }}</n-text>
-                  </n-gi>
-                  <n-gi v-if="result['卖一报价']>0">
-                    <n-text :type="'info'">{{ "卖一 " + result["卖一报价"] + '(' + result["卖一申报"] + ")" }}</n-text>
-                  </n-gi>
-
-                  <n-gi v-if="result['买二报价']>0">
-                    <n-text :type="'info'">{{ "买二 " + result["买二报价"] + '(' + result["买二申报"] + ")" }}</n-text>
-                  </n-gi>
-                  <n-gi v-if="result['卖二报价']>0">
-                    <n-text :type="'info'">{{ "卖二 " + result["卖二报价"] + '(' + result["卖二申报"] + ")" }}</n-text>
-                  </n-gi>
-
-                  <n-gi v-if="result['买三报价']>0">
-                    <n-text :type="'info'">{{ "买三 " + result["买三报价"] + '(' + result["买三申报"] + ")" }}</n-text>
-                  </n-gi>
-                  <n-gi v-if="result['卖三报价']>0">
-                    <n-text :type="'info'">{{ "买三 " + result["卖三报价"] + '(' + result["卖三申报"] + ")" }}</n-text>
-                  </n-gi>
-
-                  <n-gi v-if="result['买四报价']>0">
-                    <n-text :type="'info'">{{ "买四 " + result["买四报价"] + '(' + result["买四申报"] + ")" }}</n-text>
-                  </n-gi>
-                  <n-gi v-if="result['卖四报价']>0">
-                    <n-text :type="'info'">{{ "卖四 " + result["卖四报价"] + '(' + result["卖四申报"] + ")" }}</n-text>
-                  </n-gi>
-
-                  <n-gi v-if="result['买五报价']>0">
-                    <n-text :type="'info'">{{ "买五 " + result["买五报价"] + '(' + result["买五申报"] + ")" }}</n-text>
-                  </n-gi>
-                  <n-gi v-if="result['卖五报价']>0">
-                    <n-text :type="'info'">{{ "卖五 " + result["卖五报价"] + '(' + result["卖五申报"] + ")" }}</n-text>
-                  </n-gi>
-                </n-grid>
-              </n-collapse-item>
-            </n-collapse>
-            <template #header-extra>
-
-              <n-tag size="small" :bordered="false">{{ result['股票代码'] }}</n-tag>&nbsp;
-              <n-button size="tiny" secondary type="primary"
-                        @click="removeMonitor(result['股票代码'],result['股票名称'],result.key)">
-                取消关注
-              </n-button>&nbsp;
-
-              <n-button size="tiny" v-if="data.openAiEnable" secondary type="warning"
-                        @click="aiCheckStock(result['股票名称'],result['股票代码'])">
-                AI分析
-              </n-button>
-            </template>
-            <template #footer>
-              <n-flex vertical :size="8">
-                <n-flex justify="center">
-                  <n-text :type="'info'">{{ result["日期"] + " " + result["时间"] }}</n-text>
-                  <n-tag size="small" v-if="result.volume>0" :type="result.profitType">{{ result.volume + "股" }}</n-tag>
-                  <n-tag size="small" v-if="result.costPrice>0" :type="result.profitType">
-                    {{
-                      "成本:" + result.costPrice + "*" + result.costVolume + " " + result.profit + "%" + " ( " + result.profitAmount + " ¥ )"
-                    }}
-                  </n-tag>
-                </n-flex>
-                <n-flex justify="center">
-                  <n-button size="tiny" type="primary" secondary
-                            @click="showLightweightKline(result['股票代码'],result['股票名称'])">
-                    多周期K线
-                  </n-button>
-                </n-flex>
-              </n-flex>
-            </template>
-            <template #action>
-              <n-flex justify="left">
-                <n-button size="tiny" type="warning" @click="setStock(result['股票代码'],result['股票名称'])"> 成本
-                </n-button>
-                <n-button size="tiny" type="error"
-                          @click="showFenshi(result['股票代码'],result['股票名称'],result.changePercent)"> 分时
-                </n-button>
-                <n-button size="tiny" type="error" @click="showK(result['股票代码'],result['股票名称'])"> 日K</n-button>
-                <n-button size="tiny" type="error" v-if="result['买一报价']>0"
-                          @click="showMoney(result['股票代码'],result['股票名称'])"> 资金
-                </n-button>
-                <n-button size="tiny" type="success" @click="search(result['股票代码'],result['股票名称'])"> 详情
-                </n-button>
-                <n-button v-if="result['买一报价']>0" size="tiny" type="success"
-                          @click="searchNotice(result['股票代码'])"> 公告
-                </n-button>
-                <n-button v-if="result['买一报价']>0" size="tiny" type="success"
-                          @click="searchStockReport(result['股票代码'])"> 研报
-                </n-button>
-                <n-flex justify="right">
-                  <n-dropdown trigger="click" :options="groupList" key-field="ID" label-field="name"
-                              @select="(groupId) => AddStockGroupInfo(groupId,result['股票代码'],result['股票名称'])">
-                    <n-button type="warning" size="tiny">设置分组</n-button>
-                  </n-dropdown>
-                </n-flex>
-              </n-flex>
-            </template>
-          </n-card>
-        </n-gi>
-      </n-grid>
+      <div style="margin: 8px;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+          <n-input v-model:value="tableSearchKeyword" clearable placeholder="搜索股票名称/代码"
+                   style="width:280px;" />
+          <n-text depth="3" style="font-size:12px;">共 {{ allTableData.length }} 只</n-text>
+        </div>
+        <n-data-table
+          :columns="allTableColumns"
+          :data="allTableData"
+          :pagination="allTablePagination"
+          :row-key="(row) => row.key"
+          size="small"
+          striped
+        />
+      </div>
     </n-tab-pane>
     <n-tab-pane closable v-for="group in groupList" :group-id="group.ID" :name="String(group.ID)" :tab="group.name">
       <n-grid :x-gap="8" :cols="3" :y-gap="8">
@@ -3035,6 +3045,14 @@ function searchStockReport(stockCode) {
 :deep(.n-tabs-nav .n-tabs-tab) {
   position: relative;
   cursor: pointer;
+}
+
+/* 顶部页签固定吸顶，不随内容滚动 */
+:deep(.n-tabs-nav) {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background-color: var(--stock-tab-nav-bg, #ffffff);
 }
 
 /* 可拖拽标签的样式 */

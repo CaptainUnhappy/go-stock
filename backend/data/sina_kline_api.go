@@ -559,8 +559,30 @@ type KLineSourceResult struct {
 	Source string       `json:"source"`
 }
 
-func FetchKLineWithFallback(stockCode, stockName, klt string, limit int, end string) *KLineSourceResult {
-	macResult := fetchFromMACWithTimeout(stockCode, klt, limit, 5*time.Second)
+// eastMoneyAdjustFromFlag 将前端复权标识转为东方财富 API 的 fqt 参数值。
+// "qfq"→"1"(前复权)、"hfq"→"2"(后复权)、"none"/"0"→"0"(不复权)；
+// 空串或无法识别时返回空串，保留 EastMoney API 默认行为（兼容旧调用方）。
+func eastMoneyAdjustFromFlag(adjustFlag string) string {
+	switch strings.ToLower(strings.TrimSpace(adjustFlag)) {
+	case "qfq":
+		return "1"
+	case "hfq":
+		return "2"
+	case "none", "0":
+		return "0"
+	default:
+		return ""
+	}
+}
+
+// FetchKLineWithFallback 按降级链获取 K 线数据：MAC→东方财富→(港美股返回)→新浪→腾讯→通达信。
+// adjustFlag 可选，控制复权类型："qfq"前复权、"hfq"后复权、"none"/"0"不复权；
+// 未传时各数据源保持原有默认行为（A股 MAC/通达信默认前复权，港股默认不复权，EastMoney 走 API 默认）。
+// 注意：新浪/腾讯数据源硬编码前复权作为兜底，adjustFlag 对其无效；港美股 ExKLine2 协议不支持复权。
+func FetchKLineWithFallback(stockCode, stockName, klt string, limit int, end string, adjustFlag ...string) *KLineSourceResult {
+	flag := adjustFlagFromVariadic(adjustFlag...)
+
+	macResult := fetchFromMACWithTimeout(stockCode, klt, limit, 5*time.Second, flag)
 	if macResult != nil && macResult.Data != nil && len(*macResult.Data) > 0 {
 		macResult.Source = "tdx-mac"
 		fillVolumeRatio(macResult.Data)
@@ -568,7 +590,7 @@ func FetchKLineWithFallback(stockCode, stockName, klt string, limit int, end str
 	}
 	logger.SugaredLogger.Warnf("MAC K线数据为空或超时，尝试东方财富数据源: code=%s klt=%s", stockCode, klt)
 
-	eastMoneyResult := fetchFromEastMoney(stockCode, stockName, klt, limit, end)
+	eastMoneyResult := fetchFromEastMoney(stockCode, stockName, klt, limit, end, flag)
 	if eastMoneyResult != nil && eastMoneyResult.Data != nil && len(*eastMoneyResult.Data) > 0 {
 		eastMoneyResult.Source = "eastmoney"
 		fillVolumeRatio(eastMoneyResult.Data)
@@ -602,7 +624,7 @@ func FetchKLineWithFallback(stockCode, stockName, klt string, limit int, end str
 	}
 	logger.SugaredLogger.Warnf("腾讯K线数据也为空，尝试通达信数据源: code=%s klt=%s", stockCode, klt)
 
-	tdxResult := fetchFromTdx(stockCode, klt, limit)
+	tdxResult := fetchFromTdx(stockCode, klt, limit, flag)
 	if tdxResult != nil && tdxResult.Data != nil && len(*tdxResult.Data) > 0 {
 		tdxResult.Source = "tdx"
 		fillVolumeRatio(tdxResult.Data)
@@ -649,13 +671,14 @@ func fillVolumeRatio(data *[]KLineData) {
 	}
 }
 
-func fetchFromEastMoney(stockCode, stockName, klt string, limit int, end string) *KLineSourceResult {
+func fetchFromEastMoney(stockCode, stockName, klt string, limit int, end string, adjustFlag string) *KLineSourceResult {
 	api := NewEastMoneyKLineApi(GetSettingConfig())
+	emAdjust := eastMoneyAdjustFromFlag(adjustFlag)
 	var data *[]KLineData
 	if strings.TrimSpace(end) == "" {
-		data = api.GetKLineDataBefore(stockCode, klt, "", limit, "20500101")
+		data = api.GetKLineDataBefore(stockCode, klt, emAdjust, limit, "20500101")
 	} else {
-		data = api.GetKLineDataBefore(stockCode, klt, "", limit, end)
+		data = api.GetKLineDataBefore(stockCode, klt, emAdjust, limit, end)
 	}
 	return &KLineSourceResult{Data: data}
 }
@@ -672,26 +695,26 @@ func fetchFromTencent(stockCode, klt string, limit int) *KLineSourceResult {
 	return &KLineSourceResult{Data: data}
 }
 
-func fetchFromTdx(stockCode, klt string, limit int) *KLineSourceResult {
+func fetchFromTdx(stockCode, klt string, limit int, adjustFlag string) *KLineSourceResult {
 	api := NewTdxKLineApi()
-	data := api.GetKLineData(stockCode, klt, limit)
+	data := api.GetKLineData(stockCode, klt, limit, adjustFlag)
 	return &KLineSourceResult{Data: data}
 }
 
-func fetchFromMAC(stockCode, klt string, limit int) *KLineSourceResult {
+func fetchFromMAC(stockCode, klt string, limit int, adjustFlag string) *KLineSourceResult {
 	api := NewTdxKLineApi()
-	data := api.GetMACKLineData(stockCode, klt, limit)
+	data := api.GetMACKLineData(stockCode, klt, limit, adjustFlag)
 	return &KLineSourceResult{Data: data}
 }
 
-func fetchFromMACWithTimeout(stockCode, klt string, limit int, timeout time.Duration) *KLineSourceResult {
+func fetchFromMACWithTimeout(stockCode, klt string, limit int, timeout time.Duration, adjustFlag string) *KLineSourceResult {
 	type result struct {
 		rs *KLineSourceResult
 		ok bool
 	}
 	ch := make(chan result, 1)
 	go func() {
-		rs := fetchFromMAC(stockCode, klt, limit)
+		rs := fetchFromMAC(stockCode, klt, limit, adjustFlag)
 		ch <- result{rs: rs, ok: true}
 	}()
 

@@ -1,5 +1,6 @@
 <script setup>
-import { GetStockEastMoneyKLine, GetStockEastMoneyKLinePage, GetStockKLineWithFallback, GetStockKLinePageWithFallback } from '../../wailsjs/go/main/App'
+import { GetStockEastMoneyKLine, GetStockEastMoneyKLinePage, GetStockKLineWithFallback, GetStockKLinePageWithFallback, Follow, UnFollow, GetFollowList, GetGroupList, AddStockGroup, AddGroup } from '../../wailsjs/go/main/App'
+import { EventsEmit } from '../../wailsjs/runtime'
 import {
   CandlestickSeries,
   createChart,
@@ -7,7 +8,7 @@ import {
   LineSeries,
   LineStyle,
 } from 'lightweight-charts'
-import { NButton, NFlex, NInput, NSpin, NText, NTooltip } from 'naive-ui'
+import { NButton, NDropdown, NFlex, NInput, NModal, NSpin, NText, NTooltip, useMessage } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   smaValues, emaFinite, emaLeadingNull, weightedMaValues, bollingerBands, obvValues,
@@ -32,6 +33,7 @@ import {
   CLR_RISE, CLR_FALL, DAILY_LIKE_KLT, CN_TZ,
   HISTORY_PAGE_SIZE, BARS_BEFORE_LOAD_MORE, DEFAULT_VISIBLE_BARS,
   DEFAULT_RIGHT_LOGICAL_GAP, SHOW_CHIP_TOOLBAR_BUTTON, INTERVALS,
+  ADJUST_OPTIONS, DEFAULT_ADJUST,
 } from './kline/constants'
 
 const props = defineProps({
@@ -63,6 +65,156 @@ const hoverRawRow = ref(null)
 /** 无十字线时展示：当前数据中时间最新的一根 K 线 */
 const defaultLatestRawRow = ref(null)
 const activeKlt = ref('101')
+// 复权类型：qfq=前复权(默认)、hfq=后复权、none=不复权；仅日K及更长周期有效
+const activeAdjust = ref(DEFAULT_ADJUST)
+// 实际传给后端的复权标识：分时周期传空串（走各数据源默认行为），日K类周期传 activeAdjust
+const adjustFlagForRequest = computed(() => {
+  return DAILY_LIKE_KLT.has(activeKlt.value) ? activeAdjust.value : ''
+})
+
+// ===== 关注功能（参考 stock.vue） =====
+const message = useMessage()
+/** 当前股票是否已关注 */
+const isFollowed = ref(false)
+/** 关注操作进行中 */
+const followLoading = ref(false)
+/** 分组列表 */
+const followGroupList = ref([])
+/** 新建分组弹窗 */
+const addGroupShow = ref(false)
+const addGroupName = ref('')
+/** 新建分组后待关注的股票内部代码（null 表示非关注流程打开的弹窗） */
+const pendingFollowCode = ref(null)
+/** 关注下拉选项：默认（不分组）+ 各分组 + 新建分组 */
+const followGroupOptions = computed(() => {
+  const opts = [{ label: '默认（不分组）', key: 0 }]
+  followGroupList.value.forEach(g => opts.push({ label: g.name, key: g.ID }))
+  opts.push({ type: 'divider', key: 'divider' })
+  opts.push({ label: '新建分组', key: 'new' })
+  return opts
+})
+
+/** 东方财富格式代码转应用内部代码（如 000001.SZ → sh000001），与 stock.vue 一致 */
+function fromEastMoneyCode(emCode) {
+  if (!emCode) return ''
+  const c = String(emCode).trim().toUpperCase()
+  if (c.endsWith('.SH')) return 'sh' + c.slice(0, -3)
+  if (c.endsWith('.SZ')) return 'sz' + c.slice(0, -3)
+  if (c.endsWith('.BJ')) return 'bj' + c.slice(0, -3)
+  if (c.endsWith('.HK')) return 'hk' + c.slice(0, -3).toLowerCase()
+  if (c.endsWith('.US')) return 'us' + c.slice(0, -3).toLowerCase()
+  return c.toLowerCase()
+}
+
+/** 刷新当前股票的关注状态 */
+async function refreshFollowStatus() {
+  if (!props.code) {
+    isFollowed.value = false
+    return
+  }
+  const internalCode = fromEastMoneyCode(props.code)
+  try {
+    const [list, groups] = await Promise.all([GetFollowList(0), GetGroupList()])
+    followGroupList.value = groups || []
+    const followed = (list || []).some(item => {
+      // followList 中 StockCode 为内部格式（如 sh000001、gb_aapl）
+      if (item.StockCode === internalCode) return true
+      // 美股 gb_ 前缀兼容：usAAPL → gb_aapl
+      if (internalCode.startsWith('us') && item.StockCode === 'gb_' + internalCode.slice(2).toLowerCase()) return true
+      return false
+    })
+    isFollowed.value = followed
+  } catch (e) {
+    // 静默失败，不阻断 K 线图渲染
+    isFollowed.value = false
+  }
+}
+
+/** 下拉选择分组后关注；key='new' 时打开新建分组弹窗 */
+function handleFollowSelect(key) {
+  if (key === 'new') {
+    if (!props.code) {
+      message.error('请输入有效股票代码')
+      return
+    }
+    pendingFollowCode.value = fromEastMoneyCode(props.code)
+    addGroupName.value = ''
+    addGroupShow.value = true
+    return
+  }
+  doFollowStock(Number(key))
+}
+
+/** 新建分组并关注当前股票 */
+function saveAddGroup() {
+  const name = addGroupName.value.trim()
+  if (!name) {
+    message.warning('请输入分组名称')
+    return
+  }
+  AddGroup({ name, sort: 1 }).then(result => {
+    message.info(result)
+    addGroupShow.value = false
+    GetGroupList().then(gList => {
+      followGroupList.value = gList || []
+      EventsEmit('groupListChanged')
+      // 创建成功后执行关注+加分组
+      if (pendingFollowCode.value) {
+        const created = (gList || []).find(g => g.name === name)
+        pendingFollowCode.value = null
+        if (created) {
+          doFollowStock(created.ID)
+        }
+      }
+    })
+  }).catch(err => message.error('新建分组失败: ' + (err?.message || err)))
+}
+
+/** 关注并加入分组（groupId=0 表示不分组） */
+function doFollowStock(groupId) {
+  if (!props.code) {
+    message.error('请输入有效股票代码')
+    return
+  }
+  if (followLoading.value) return
+  followLoading.value = true
+  const internalCode = fromEastMoneyCode(props.code)
+  Follow(internalCode).then(result => {
+    if (result === '关注成功') {
+      isFollowed.value = true
+      const groupName = followGroupList.value.find(g => g.ID === groupId)?.name || ''
+      message.success(groupId > 0 ? `已关注，并加入分组「${groupName}」` : '关注成功')
+      // 加入分组
+      if (groupId > 0) {
+        // Follow 后美股 code 被归一化为 gb_ 格式，AddStockGroup 需用同格式
+        let groupCode = internalCode
+        if (internalCode.startsWith('us')) {
+          groupCode = 'gb_' + internalCode.slice(2).toLowerCase()
+        }
+        AddStockGroup(groupId, groupCode).then(() => {
+          GetGroupList().then(gList => { followGroupList.value = gList || [] })
+        }).catch(err => message.error('加入分组失败: ' + (err?.message || err)))
+      }
+    } else {
+      message.error(result)
+    }
+  }).catch(err => message.error('关注失败: ' + (err?.message || err))).finally(() => {
+    followLoading.value = false
+  })
+}
+
+/** 取消关注 */
+function unfollowStock() {
+  if (!props.code || followLoading.value) return
+  followLoading.value = true
+  const internalCode = fromEastMoneyCode(props.code)
+  UnFollow(internalCode).then(result => {
+    message.success(result)
+    isFollowed.value = false
+  }).catch(err => message.error('取消关注失败: ' + (err?.message || err))).finally(() => {
+    followLoading.value = false
+  })
+}
 const showMA = ref(false)
 const showBOLL = ref(false)
 const showOBV = ref(false)
@@ -3394,6 +3546,7 @@ async function loadOlderHistory() {
   }
   const kltSnap = activeKlt.value
   const codeSnap = props.code
+  const adjustSnap = DAILY_LIKE_KLT.has(kltSnap) ? activeAdjust.value : ''
   const oldest = mergedRawRows[0]
   const end = formatEastMoneyEndFromOldest(oldest.day, kltSnap)
   if (!end) {
@@ -3410,8 +3563,9 @@ async function loadOlderHistory() {
       kltSnap,
       HISTORY_PAGE_SIZE,
       end,
+      adjustSnap,
     )
-    if (kltSnap !== activeKlt.value || codeSnap !== props.code) return
+    if (kltSnap !== activeKlt.value || codeSnap !== props.code || adjustSnap !== adjustFlagForRequest.value) return
     const src = result?.source || ''
     if (src) activeDataSource.value = src
     const raw = result?.data
@@ -3455,6 +3609,7 @@ async function refreshLatestPoll() {
   if (!props.code || !candleSeries) return
   const kltSnap = activeKlt.value
   const codeSnap = props.code
+  const adjustSnap = DAILY_LIKE_KLT.has(kltSnap) ? activeAdjust.value : ''
   try {
     const meta = INTERVALS.find((x) => x.klt === kltSnap) || INTERVALS[0]
     const result = await GetStockKLineWithFallback(
@@ -3462,8 +3617,9 @@ async function refreshLatestPoll() {
       props.stockName || '',
       meta.klt,
       meta.limit,
+      adjustSnap,
     )
-    if (codeSnap !== props.code || activeKlt.value !== kltSnap) return
+    if (codeSnap !== props.code || activeKlt.value !== kltSnap || adjustSnap !== adjustFlagForRequest.value) return
     const src = result?.source || ''
     if (src) activeDataSource.value = src
     const raw = result?.data
@@ -3586,6 +3742,7 @@ async function loadData() {
       props.stockName || '',
       meta.klt,
       meta.limit,
+      adjustFlagForRequest.value,
     )
     const src = result?.source || ''
     activeDataSource.value = src
@@ -3820,6 +3977,7 @@ onMounted(() => {
     loadData()
     console.log('[DEBUG onMounted] after loadData call')
     setupPoll()
+    refreshFollowStatus()
   })
 })
 
@@ -3833,6 +3991,7 @@ watch(
     hoverRawRow.value = null
     loadData()
     setupPoll()
+    refreshFollowStatus()
   },
 )
 
@@ -3841,6 +4000,13 @@ watch(activeKlt, () => {
   chart?.applyOptions(chartThemeOptions(props.darkTheme))
   loadData()
   setupPoll()
+})
+
+// 切换复权类型时重新加载（仅日K类周期有效，分时周期 adjustFlag 为空串不影响数据）
+watch(activeAdjust, () => {
+  if (!DAILY_LIKE_KLT.has(activeKlt.value)) return
+  hoverRawRow.value = null
+  loadData()
 })
 
 watch(
@@ -4233,6 +4399,20 @@ watch(showLongPosition, (newVal) => {
             {{ it.label }}
           </NButton>
           <span style="width: 12px" />
+          <template v-if="DAILY_LIKE_KLT.has(activeKlt)">
+            <NText depth="3" style="font-size: 12px; margin-right: 2px">复权</NText>
+            <NButton
+              v-for="opt in ADJUST_OPTIONS"
+              :key="opt.value"
+              size="tiny"
+              :type="activeAdjust === opt.value ? 'primary' : 'default'"
+              :secondary="activeAdjust !== opt.value"
+              @click="activeAdjust = opt.value"
+            >
+              {{ opt.label }}
+            </NButton>
+            <span style="width: 12px" />
+          </template>
           <NText depth="3" style="font-size: 12px; margin-right: 2px">多单</NText>
           <NButton
             size="tiny"
@@ -4494,10 +4674,52 @@ watch(showLongPosition, (newVal) => {
             </span>
           </NText>
           <NSpin v-if="loading || loadingHistory" size="small" />
+          <template v-if="code">
+            <NDropdown
+              v-if="!isFollowed"
+              trigger="click"
+              :options="followGroupOptions"
+              :disabled="followLoading"
+              @select="handleFollowSelect"
+              placement="top"
+            >
+              <NButton size="tiny" type="primary" :loading="followLoading" secondary>
+                + 关注
+              </NButton>
+            </NDropdown>
+            <NTooltip :delay="500">
+              <template #trigger>
+                <NButton
+                  v-if="isFollowed"
+                  size="tiny"
+                  type="success"
+                  :loading="followLoading"
+                  secondary
+                  @click="unfollowStock"
+                >
+                  ✓ 已关注
+                </NButton>
+              </template>
+              <span>点击取消关注</span>
+            </NTooltip>
+          </template>
         </NFlex>
       </div>
     </div>
   </div>
+  <NModal v-model:show="addGroupShow" title="新建分组" style="width: 360px; text-align: left" preset="card">
+    <NInput
+      v-model:value="addGroupName"
+      placeholder="请输入分组名称"
+      @keyup.enter="saveAddGroup"
+    />
+    <template #footer>
+      <NFlex justify="end" :size="8">
+        <NButton size="small" type="primary" @click="saveAddGroup">保存</NButton>
+        <NButton size="small" @click="addGroupShow = false">取消</NButton>
+      </NFlex>
+    </template>
+  </NModal>
 </template>
 
 <style scoped>

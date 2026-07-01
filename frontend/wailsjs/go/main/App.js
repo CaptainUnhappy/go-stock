@@ -458,12 +458,12 @@ export function GetStockKLine(arg1, arg2, arg3) {
   return window['go']['main']['App']['GetStockKLine'](arg1, arg2, arg3);
 }
 
-export function GetStockKLinePageWithFallback(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['GetStockKLinePageWithFallback'](arg1, arg2, arg3, arg4, arg5);
+export function GetStockKLinePageWithFallback(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['GetStockKLinePageWithFallback'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
-export function GetStockKLineWithFallback(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['GetStockKLineWithFallback'](arg1, arg2, arg3, arg4);
+export function GetStockKLineWithFallback(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['GetStockKLineWithFallback'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function GetStockList(arg1) {
@@ -628,6 +628,10 @@ export function NewsPush(arg1) {
 
 export function OpenURL(arg1) {
   return window['go']['main']['App']['OpenURL'](arg1);
+}
+
+export function PromptPlazaRequest(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['PromptPlazaRequest'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function QuitApp() {

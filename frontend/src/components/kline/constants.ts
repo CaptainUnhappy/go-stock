@@ -10,6 +10,15 @@ export const DEFAULT_VISIBLE_BARS = 180
 export const DEFAULT_RIGHT_LOGICAL_GAP = 18
 export const SHOW_CHIP_TOOLBAR_BUTTON = false
 
+// 复权类型：qfq=前复权（默认）、hfq=后复权、none=不复权
+// 仅日K及更长周期（DAILY_LIKE_KLT）有效；分时周期传空串走各数据源默认行为
+export const DEFAULT_ADJUST = 'qfq'
+export const ADJUST_OPTIONS = [
+  { value: 'qfq', label: '前复权' },
+  { value: 'hfq', label: '后复权' },
+  { value: 'none', label: '不复权' },
+]
+
 export const INTERVALS = [
   { klt: '1', label: '1分', limit: 1000 },
   { klt: '5', label: '5分', limit: 600 },

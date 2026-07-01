@@ -299,7 +299,31 @@ func (t *TdxKLineApi) GetCallAuctionLatest(stockCode string) *TdxCallAuctionData
 	return last
 }
 
-func (t *TdxKLineApi) GetKLineData(stockCode string, klt string, limit int) *[]KLineData {
+// tdxAdjustFromFlag 将前端传入的复权标识字符串映射为 gotdx 的复权常量。
+// adjustFlag 取值："qfq"→前复权(AdjustQFQ)、"hfq"→后复权(AdjustHFQ)、"none"/"0"→不复权(AdjustNone)。
+// 当 adjustFlag 为空或无法识别时，返回 legacyDefault，保持各调用方原有硬编码默认行为。
+func tdxAdjustFromFlag(adjustFlag string, legacyDefault uint16) uint16 {
+	switch strings.ToLower(strings.TrimSpace(adjustFlag)) {
+	case "qfq":
+		return types.AdjustQFQ
+	case "hfq":
+		return types.AdjustHFQ
+	case "none", "0":
+		return types.AdjustNone
+	default:
+		return legacyDefault
+	}
+}
+
+// adjustFlagFromVariadic 从 variadic 参数中提取第一个复权标识，未提供时返回空串。
+func adjustFlagFromVariadic(adjustFlag ...string) string {
+	if len(adjustFlag) > 0 {
+		return adjustFlag[0]
+	}
+	return ""
+}
+
+func (t *TdxKLineApi) GetKLineData(stockCode string, klt string, limit int, adjustFlag ...string) *[]KLineData {
 	result := &[]KLineData{}
 	if err := t.ensureClient(); err != nil {
 		logger.SugaredLogger.Errorf("TdxKLine ensureClient error: %v", err)
@@ -330,8 +354,10 @@ func (t *TdxKLineApi) GetKLineData(stockCode string, klt string, limit int) *[]K
 		}
 	}
 
+	adjust := tdxAdjustFromFlag(adjustFlagFromVariadic(adjustFlag...), types.AdjustQFQ)
+
 	t.mu.Lock()
-	bars, err := t.client.StockKLine(uint16(klineType), market, code, 0, uint16(fetchCount), 0, types.AdjustQFQ)
+	bars, err := t.client.StockKLine(uint16(klineType), market, code, 0, uint16(fetchCount), 0, adjust)
 	t.mu.Unlock()
 
 	if err != nil {
@@ -341,7 +367,7 @@ func (t *TdxKLineApi) GetKLineData(stockCode string, klt string, limit int) *[]K
 			return result
 		}
 		t.mu.Lock()
-		bars, err = t.client.StockKLine(uint16(klineType), market, code, 0, uint16(fetchCount), 0, types.AdjustQFQ)
+		bars, err = t.client.StockKLine(uint16(klineType), market, code, 0, uint16(fetchCount), 0, adjust)
 		t.mu.Unlock()
 		if err != nil {
 			logger.SugaredLogger.Errorf("TdxKLine StockKLine retry error: %v", err)
@@ -405,30 +431,37 @@ func tdxAggregationParams(klt string) (srcKlt string, n int) {
 // GetMACKLineData 通过 MAC 行情接口获取 K 线数据
 // A股使用 MAC 客户端，港美股使用 MAC Ex 客户端
 // 港股同时在 MAC 和 MAC Ex 上尝试
-func (t *TdxKLineApi) GetMACKLineData(stockCode string, klt string, limit int) *[]KLineData {
+// adjustFlag 可选，控制复权类型："qfq"前复权(默认A股)、"hfq"后复权、"none"/"0"不复权(默认港股)；
+// 港美股 ExKLine2 协议不支持复权参数，adjustFlag 对其无效。
+func (t *TdxKLineApi) GetMACKLineData(stockCode string, klt string, limit int, adjustFlag ...string) *[]KLineData {
 	if limit <= 0 {
 		limit = 500
 	}
+
+	flag := adjustFlagFromVariadic(adjustFlag...)
 
 	// 判断是否港美股
 	if exMarket, exCode, ok := macExMarketFromStockCode(stockCode); ok {
 		// 港股：先尝试 MAC 主服务器（MarketHK=3），再尝试扩展行情 ExKLine2（主板=31/创业板=48）
 		if IsHKStockCode(stockCode) {
-			data := t.getMACMainKLineData(uint8(types.MarketHK), exCode, klt, limit)
+			// 港股 MAC 主客户端默认不复权
+			hkAdjust := tdxAdjustFromFlag(flag, types.AdjustNone)
+			data := t.getMACMainKLineData(uint8(types.MarketHK), exCode, klt, limit, hkAdjust)
 			if data != nil && len(*data) > 0 {
 				return data
 			}
 		}
-		// MAC Ex 扩展行情
+		// MAC Ex 扩展行情（ExKLine2 协议不支持复权参数，此处忽略 adjustFlag）
 		return t.getMACExKLineData(exMarket, exCode, klt, limit)
 	}
 
-	// A股走 MAC 客户端
-	return t.getMACMainKLineDataEx(stockCode, klt, limit)
+	// A股走 MAC 客户端，默认前复权
+	aAdjust := tdxAdjustFromFlag(flag, types.AdjustQFQ)
+	return t.getMACMainKLineDataEx(stockCode, klt, limit, aAdjust)
 }
 
-// getMACMainKLineDataEx A股走 MAC 主客户端
-func (t *TdxKLineApi) getMACMainKLineDataEx(stockCode string, klt string, limit int) *[]KLineData {
+// getMACMainKLineDataEx A股走 MAC 主客户端，adjust 指定复权类型（默认前复权 AdjustQFQ）
+func (t *TdxKLineApi) getMACMainKLineDataEx(stockCode string, klt string, limit int, adjust uint16) *[]KLineData {
 	result := &[]KLineData{}
 	if err := t.ensureMACClient(); err != nil {
 		logger.SugaredLogger.Errorf("TdxKLine ensureMACClient error: %v", err)
@@ -457,7 +490,7 @@ func (t *TdxKLineApi) getMACMainKLineDataEx(stockCode string, klt string, limit 
 	}
 
 	t.macMu.Lock()
-	bars, err := t.macClient.MACSymbolBars(market, code, uint16(klineType), 1, 0, fetchCount, types.AdjustQFQ)
+	bars, err := t.macClient.MACSymbolBars(market, code, uint16(klineType), 1, 0, fetchCount, adjust)
 	t.macMu.Unlock()
 
 	if err != nil {
@@ -467,7 +500,7 @@ func (t *TdxKLineApi) getMACMainKLineDataEx(stockCode string, klt string, limit 
 			return result
 		}
 		t.macMu.Lock()
-		bars, err = t.macClient.MACSymbolBars(market, code, uint16(klineType), 1, 0, fetchCount, types.AdjustQFQ)
+		bars, err = t.macClient.MACSymbolBars(market, code, uint16(klineType), 1, 0, fetchCount, adjust)
 		t.macMu.Unlock()
 		if err != nil {
 			logger.SugaredLogger.Errorf("TdxKLine MACSymbolBars retry error: %v", err)
@@ -488,8 +521,8 @@ func (t *TdxKLineApi) getMACMainKLineDataEx(stockCode string, klt string, limit 
 	return &converted
 }
 
-// getMACMainKLineData 通过 MAC 主客户端获取K线（指定 market 和 code）
-func (t *TdxKLineApi) getMACMainKLineData(market uint8, code string, klt string, limit int) *[]KLineData {
+// getMACMainKLineData 通过 MAC 主客户端获取K线（指定 market 和 code），adjust 指定复权类型（港股默认不复权 AdjustNone）
+func (t *TdxKLineApi) getMACMainKLineData(market uint8, code string, klt string, limit int, adjust uint16) *[]KLineData {
 	result := &[]KLineData{}
 	if err := t.ensureMACClient(); err != nil {
 		logger.SugaredLogger.Errorf("TdxKLine ensureMACClient error: %v", err)
@@ -516,7 +549,7 @@ func (t *TdxKLineApi) getMACMainKLineData(market uint8, code string, klt string,
 	}
 
 	t.macMu.Lock()
-	bars, err := t.macClient.MACSymbolBars(market, code, uint16(klineType), 1, 0, fetchCount, types.AdjustNone)
+	bars, err := t.macClient.MACSymbolBars(market, code, uint16(klineType), 1, 0, fetchCount, adjust)
 	t.macMu.Unlock()
 
 	if err != nil {
@@ -599,7 +632,7 @@ func (t *TdxKLineApi) getMACExKLineData(market uint8, code string, klt string, l
 func convertMACSymbolBar(list []proto.MACSymbolBar) []KLineData {
 	result := make([]KLineData, 0, len(list))
 	for i, bar := range list {
-		day := formatMACDateTime(bar.DateTime)
+		day := formatMACDateTime(bar.DateTime.Format("2006-01-02 15:04:05"))
 		kd := KLineData{
 			Day:    day,
 			Open:   fmt.Sprintf("%.2f", bar.Open),
