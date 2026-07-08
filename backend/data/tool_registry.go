@@ -35,12 +35,9 @@ func registerToolHandler(name string, handler ToolHandler) {
 var toolRequiredKey = map[string]string{
 	// IwencaiApiKey 依赖的工具（同花顺问财）
 	"QueryIwencai":          "IwencaiApiKey",
-	"SearchReport":          "IwencaiApiKey",
 	"QueryInsResearch":      "IwencaiApiKey",
 	"QueryZhishu":           "IwencaiApiKey",
 	"QueryEvent":            "IwencaiApiKey",
-	"SearchNews":            "IwencaiApiKey",
-	"SearchInvestor":        "IwencaiApiKey",
 	"SelectAStock":          "IwencaiApiKey",
 	"QueryMacro":            "IwencaiApiKey",
 	"SelectSector":          "IwencaiApiKey",
@@ -60,7 +57,6 @@ var toolRequiredKey = map[string]string{
 	"SelectUSStock":         "IwencaiApiKey",
 	"QueryFundFinance":      "IwencaiApiKey",
 	"QueryBusinessData":     "IwencaiApiKey",
-	"SearchAnnouncement":    "IwencaiApiKey",
 
 	// EmApiKey 依赖的工具（东方财富妙想）
 	"StockEarningsReview":       "EmApiKey",
@@ -80,6 +76,10 @@ var toolRequiredKey = map[string]string{
 	// DingRobot+DingPushEnable 依赖的工具（钉钉推送）
 	"SendDingDingMessage": "DingRobot",
 	"SendToDingDing":      "DingRobot",
+
+	// FeishuRobot+FeishuPushEnable 依赖的工具（飞书推送）
+	"SendFeishuMessage": "FeishuRobot",
+	"SendToFeishu":      "FeishuRobot",
 }
 
 // isApiKeyConfigured 检查指定类型的 API Key 是否已配置
@@ -101,6 +101,8 @@ func isApiKeyConfigured(keyType string) bool {
 		return strings.TrimSpace(config.EmApiKey) != ""
 	case "DingRobot":
 		return config.DingPushEnable && strings.TrimSpace(config.DingRobot) != ""
+	case "FeishuRobot":
+		return config.FeishuPushEnable && strings.TrimSpace(config.FeishuRobot) != ""
 	}
 	return true
 }

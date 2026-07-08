@@ -174,6 +174,8 @@ export function GetDailyDimensionStats(arg1:string,arg2:string,arg3:number):Prom
 
 export function GetEffectiveSponsorVip():Promise<Record<string, any>>;
 
+export function GetFeishuBotStatus():Promise<string>;
+
 export function GetFollowList(arg1:number):Promise<any>;
 
 export function GetFollowedFund():Promise<Array<data.FollowedFund>>;
@@ -358,6 +360,10 @@ export function SendDingDingMessage(arg1:string,arg2:string):Promise<string>;
 
 export function SendDingDingMessageByType(arg1:string,arg2:string,arg3:number):Promise<string>;
 
+export function SendFeishuMessage(arg1:string,arg2:string):Promise<string>;
+
+export function SendFeishuMessageByType(arg1:string,arg2:string,arg3:number):Promise<string>;
+
 export function SetAlarmChangePercent(arg1:number,arg2:number,arg3:string):Promise<string>;
 
 export function SetCostPriceAndVolume(arg1:string,arg2:number,arg3:number):Promise<string>;
@@ -374,9 +380,13 @@ export function ShareText(arg1:string,arg2:string):Promise<string>;
 
 export function ShowFromTray():Promise<void>;
 
+export function StartFeishuBot():Promise<string>;
+
 export function StockNotice(arg1:string):Promise<Array<any>>;
 
 export function StockResearchReport(arg1:string):Promise<Array<any>>;
+
+export function StopFeishuBot():Promise<string>;
 
 export function SummaryStockNews(arg1:string,arg2:number,arg3:any,arg4:boolean,arg5:boolean,arg6:string,arg7:string):Promise<void>;
 

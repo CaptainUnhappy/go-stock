@@ -13,10 +13,22 @@ import (
 
 type Settings struct {
 	gorm.Model
-	TushareToken           string `json:"tushareToken"`
-	LocalPushEnable        bool   `json:"localPushEnable"`
-	DingPushEnable         bool   `json:"dingPushEnable"`
-	DingRobot              string `json:"dingRobot"`
+	TushareToken     string `json:"tushareToken"`
+	LocalPushEnable  bool   `json:"localPushEnable"`
+	DingPushEnable   bool   `json:"dingPushEnable"`
+	DingRobot        string `json:"dingRobot"`
+	FeishuPushEnable bool   `json:"feishuPushEnable"`
+	FeishuRobot      string `json:"feishuRobot"`
+	FeishuSecret     string `json:"feishuSecret" gorm:"column:feishu_secret"`
+	// 飞书应用机器人（接收消息+AI回复，长连接模式，与 FeishuPush 自定义机器人推送独立）
+	FeishuBotEnable        bool   `json:"feishuBotEnable"`
+	FeishuAppID            string `json:"feishuAppId" gorm:"column:feishu_app_id"`
+	FeishuAppSecret        string `json:"feishuAppSecret" gorm:"column:feishu_app_secret"`
+	FeishuBotAiConfigId    int    `json:"feishuBotAiConfigId" gorm:"column:feishu_bot_ai_config_id"`
+	FeishuBotSysPromptId   int    `json:"feishuBotSysPromptId" gorm:"column:feishu_bot_sys_prompt_id"`
+	FeishuBotEnableTools   bool   `json:"feishuBotEnableTools"`
+	FeishuBotThinking      bool   `json:"feishuBotThinking"`
+	FeishuBotAgentMode     string `json:"feishuBotAgentMode" gorm:"column:feishu_bot_agent_mode"`
 	UpdateBasicInfoOnStart bool   `json:"updateBasicInfoOnStart"`
 	RefreshInterval        int64  `json:"refreshInterval"`
 	OpenAiEnable           bool   `json:"openAiEnable"`
@@ -114,6 +126,17 @@ func UpdateConfig(s *SettingConfig) string {
 			"local_push_enable":          s.LocalPushEnable,
 			"ding_push_enable":           s.DingPushEnable,
 			"ding_robot":                 s.DingRobot,
+			"feishu_push_enable":         s.FeishuPushEnable,
+			"feishu_robot":               s.FeishuRobot,
+			"feishu_secret":              s.FeishuSecret,
+			"feishu_bot_enable":          s.FeishuBotEnable,
+			"feishu_app_id":              s.FeishuAppID,
+			"feishu_app_secret":          s.FeishuAppSecret,
+			"feishu_bot_ai_config_id":    s.FeishuBotAiConfigId,
+			"feishu_bot_sys_prompt_id":   s.FeishuBotSysPromptId,
+			"feishu_bot_enable_tools":    s.FeishuBotEnableTools,
+			"feishu_bot_thinking":        s.FeishuBotThinking,
+			"feishu_bot_agent_mode":      s.FeishuBotAgentMode,
 			"update_basic_info_on_start": s.UpdateBasicInfoOnStart,
 			"refresh_interval":           s.RefreshInterval,
 			"open_ai_enable":             s.OpenAiEnable,
