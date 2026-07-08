@@ -1308,8 +1308,8 @@ func GetAllDataTools() []tool.BaseTool {
 				if !ok {
 					continue
 				}
-				if m["columns"].([]any) != nil && len(m["columns"].([]any)) > 0 {
-					columns := m["columns"].([]any)[0].(map[string]any)
+				if columnsRaw, ok := m["columns"].([]any); ok && len(columnsRaw) > 0 {
+					columns, _ := columnsRaw[0].(map[string]any)
 					rows = append(rows, row{
 						Title:      convertor.ToString(m["title"]),
 						NoticeDate: convertor.ToString(m["notice_date"]),

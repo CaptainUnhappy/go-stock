@@ -9,6 +9,7 @@ import (
 type TreeNode struct {
 	Label    string
 	Path     string
+	Example  string
 	Children []TreeNode
 }
 
@@ -20,6 +21,7 @@ func CommandTree() TreeNode {
 			marketTree(),
 			klineTree(),
 			fundTree(),
+			calendarTree(),
 			researchTree(),
 			rawToolTree(),
 		},
@@ -30,24 +32,32 @@ func RenderHelp() string {
 	var b strings.Builder
 	b.WriteString("# go-stock CLI 功能树\n\n")
 	b.WriteString("CLI 路径和 GUI 菜单对齐；原对外 MCP 工具已归档到 `tool <原工具名>` 兼容层。\n\n")
-	renderNode(&b, CommandTree(), "", true)
+	tree := CommandTree()
+	for i, child := range tree.Children {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		renderNode(&b, child, "", i == len(tree.Children)-1, true)
+	}
 	b.WriteString("\n## 常用示例\n\n")
 	b.WriteString("```powershell\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 help\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 market news\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 market major-index\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 market major-index --name 上证指数\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 market industry-rank concept-money --sort netamount --limit 20\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 market money-flow stock --sort r0_net --limit 20\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 kline show --stock-code 002335 --k-line-type day --adjust qfq --limit 120\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 kline signals --stock-code 002335 --k-line-type day --adjust qfq --limit 250\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 portfolio list\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 portfolio group rename --group-id 1 --new-name 短线观察\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 portfolio position set --stock-code 600237 --cost-price 12.56 --volume 300\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 fund ranking --page-size 20\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 tool list\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 tool info --name GetStockOrderBook\n")
-	b.WriteString(".\\scripts\\go-stock-cli.ps1 tool GetStockOrderBook --stock-code 600237\n")
+	b.WriteString(".\\go-stock-cli.exe help\n")
+	b.WriteString(".\\go-stock-cli.exe market news\n")
+	b.WriteString(".\\go-stock-cli.exe market major-index\n")
+	b.WriteString(".\\go-stock-cli.exe market major-index --name 上证指数\n")
+	b.WriteString(".\\go-stock-cli.exe market industry-rank concept-money --sort netamount --limit 20\n")
+	b.WriteString(".\\go-stock-cli.exe market money-flow stock --sort r0_net --limit 20\n")
+	b.WriteString(".\\go-stock-cli.exe kline show --stock-code 002335 --k-line-type day --adjust qfq --limit 120\n")
+	b.WriteString(".\\go-stock-cli.exe kline signals --stock-code 002335 --k-line-type day --adjust qfq --limit 250\n")
+	b.WriteString(".\\go-stock-cli.exe portfolio list\n")
+	b.WriteString(".\\go-stock-cli.exe portfolio group rename --group-id 1 --new-name 短线观察\n")
+	b.WriteString(".\\go-stock-cli.exe portfolio position set --stock-code 600237 --cost-price 12.56 --volume 300\n")
+	b.WriteString(".\\go-stock-cli.exe fund ranking --page-size 20\n")
+	b.WriteString(".\\go-stock-cli.exe calendar is-trading-day --date 2026-07-03\n")
+	b.WriteString(".\\go-stock-cli.exe calendar next-trading-day --date 2026-07-03\n")
+	b.WriteString(".\\go-stock-cli.exe tool list\n")
+	b.WriteString(".\\go-stock-cli.exe tool info --name GetStockOrderBook\n")
+	b.WriteString(".\\go-stock-cli.exe tool GetStockOrderBook --stock-code 600237\n")
 	b.WriteString("```\n")
 	return b.String()
 }
@@ -68,10 +78,10 @@ func CommandPathsFromTree() []string {
 	return paths
 }
 
-func renderNode(b *strings.Builder, n TreeNode, prefix string, last bool) {
+func renderNode(b *strings.Builder, n TreeNode, prefix string, last bool, root bool) {
 	connector := ""
-	nextPrefix := ""
-	if prefix != "" {
+	nextPrefix := prefix
+	if !root {
 		if last {
 			connector = "└─ "
 			nextPrefix = prefix + "   "
@@ -79,20 +89,20 @@ func renderNode(b *strings.Builder, n TreeNode, prefix string, last bool) {
 			connector = "├─ "
 			nextPrefix = prefix + "│  "
 		}
-	} else {
-		nextPrefix = ""
 	}
 
 	label := n.Label
 	if n.Path != "" {
 		label = fmt.Sprintf("%s  `%s`", label, NormalizeCommandPath(n.Path))
+	} else if n.Example != "" {
+		label = fmt.Sprintf("%s  `%s`", label, n.Example)
 	}
 	b.WriteString(prefix)
 	b.WriteString(connector)
 	b.WriteString(label)
 	b.WriteString("\n")
 	for i, child := range n.Children {
-		renderNode(b, child, nextPrefix, i == len(n.Children)-1)
+		renderNode(b, child, nextPrefix, i == len(n.Children)-1, false)
 	}
 }
 
@@ -151,24 +161,14 @@ func marketTree() TreeNode {
 			{Label: "快讯列表"},
 		}},
 		{Label: "全球股指", Path: "market global-index"},
-		{Label: "重大指数", Path: "market major-index", Children: majorIndexNodes()},
+		{Label: "重大指数", Path: "market major-index"},
 		{Label: "行业排名", Children: []TreeNode{
 			{Label: "行业涨幅排名", Path: "market industry-rank gain"},
 			{Label: "行业资金排名", Path: "market industry-rank money"},
 			{Label: "证监会行业资金排名", Path: "market industry-rank csrc-money"},
 			{Label: "概念板块资金排名", Path: "market industry-rank concept-money"},
 		}},
-		{Label: "个股资金流向", Path: "market money-flow stock", Children: []TreeNode{
-			{Label: "净流入额排名"},
-			{Label: "流出资金排名"},
-			{Label: "净流入率排名"},
-			{Label: "主力净流入额排名"},
-			{Label: "主力流出排名"},
-			{Label: "主力净流入率排名"},
-			{Label: "散户净流入额排名"},
-			{Label: "散户流出排名"},
-			{Label: "散户净流入率排名"},
-		}},
+		{Label: "个股资金流向", Path: "market money-flow stock"},
 		{Label: "板块资金流向", Children: []TreeNode{
 			{Label: "板块列表", Path: "market money-flow bk list"},
 			{Label: "最新资金排名", Path: "market money-flow bk latest"},
@@ -228,19 +228,30 @@ func fundTree() TreeNode {
 	}}
 }
 
+func calendarTree() TreeNode {
+	return TreeNode{Label: "交易日历", Children: []TreeNode{
+		{Label: "当前时间", Path: "calendar now"},
+		{Label: "是否交易日", Path: "calendar is-trading-day"},
+		{Label: "下一交易日", Path: "calendar next-trading-day"},
+		{Label: "节假日查询", Path: "calendar holiday"},
+		{Label: "年度节假日", Path: "calendar holiday-year"},
+		{Label: "批量节假日", Path: "calendar holiday-batch"},
+	}}
+}
+
 func researchTree() TreeNode {
 	return TreeNode{Label: "研究中心", Children: []TreeNode{
-		{Label: "AI分析报告", Path: "research ai-report"},
-		{Label: "股票推荐记录", Path: "research recommend"},
+		{Label: "AI分析报告（禁用）", Path: "research ai-report"},
+		{Label: "股票推荐记录（禁用）", Path: "research recommend"},
 		{Label: "异动监控", Path: "research changes"},
 		{Label: "涨停梯队", Path: "research uplimit"},
-		{Label: "提示词模板", Path: "research prompt-template"},
-		{Label: "提示词广场", Path: "research prompt-plaza"},
-		{Label: "问答广场", Path: "research qa-plaza"},
+		{Label: "提示词模板（禁用）", Path: "research prompt-template"},
+		{Label: "提示词广场（禁用）", Path: "research prompt-plaza"},
+		{Label: "问答广场（禁用）", Path: "research qa-plaza"},
 		{Label: "形态选股", Path: "research pattern-screen"},
 		{Label: "指标选股", Path: "research indicator-screen"},
-		{Label: "定时任务", Path: "research cron-task"},
-		{Label: "交易日志", Path: "research trade-log"},
+		{Label: "定时任务（禁用）", Path: "research cron-task"},
+		{Label: "交易日志（禁用）", Path: "research trade-log"},
 	}}
 }
 
@@ -260,7 +271,7 @@ func majorIndexNodes() []TreeNode {
 	}
 	nodes := make([]TreeNode, 0, len(names))
 	for _, name := range names {
-		nodes = append(nodes, TreeNode{Label: name})
+		nodes = append(nodes, TreeNode{Label: name, Example: "market major-index --name " + name})
 	}
 	return nodes
 }

@@ -8,7 +8,7 @@ description: Generate a Chinese A-share after-hours market summary image from lo
 ## Workflow
 
 1. Read the repository CLI instructions named in `AGENTS.md` if they are not already loaded.
-2. Use `.\scripts\go-stock-cli.ps1 ...` from the repository root in Codex/sandbox sessions. Direct `go run ./cmd/go-stock-cli ...` is also valid when `GOCACHE` is writable.
+2. Use `.\go-stock-cli.exe ...` from the repository root in Codex/sandbox sessions. If the exe is missing or stale, run `.\scripts\build-windows.ps1` first; use `.\scripts\go-stock-cli.ps1` only as a source-run fallback.
 3. Use only read-only CLI commands. Do not call write, notification, recommendation-record, MCP-management, or skill-management tools.
 4. Collect the report data with the CLI call plan below.
 5. Normalize the result to the JSON shape in `references/report-schema.md`.

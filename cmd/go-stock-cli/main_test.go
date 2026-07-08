@@ -27,6 +27,16 @@ func TestParseArgsNormalizesStockCodeAliases(t *testing.T) {
 	}
 }
 
+func TestParseArgsPreservesBareStockCodeAsString(t *testing.T) {
+	req, _, err := parseArgs([]string{"tool", "GetStockInfo", "--stock-code", "600237"})
+	if err != nil {
+		t.Fatalf("parseArgs failed: %v", err)
+	}
+	if got := req.Args["stockCode"]; got != "600237" {
+		t.Fatalf("stockCode arg = %#v, want string 600237", got)
+	}
+}
+
 func TestParseArgsNormalizesAdjustFlagAliases(t *testing.T) {
 	for _, flag := range []string{"--adjust", "--adjust-flag", "--adjust_flag", "--adjustFlag"} {
 		req, _, err := parseArgs([]string{"kline", "show", "--stock-code", "002335", flag, "hfq"})
@@ -35,6 +45,31 @@ func TestParseArgsNormalizesAdjustFlagAliases(t *testing.T) {
 		}
 		if got := req.Args["adjustFlag"]; got != "hfq" {
 			t.Fatalf("%s adjustFlag arg = %#v, want hfq", flag, got)
+		}
+	}
+}
+
+func TestParseArgsNormalizesCalendarAndNoticeAliases(t *testing.T) {
+	req, _, err := parseArgs([]string{
+		"market", "hot", "calendar",
+		"--year-month", "2026-07",
+		"--stock-list", "600237",
+		"--start-date", "2026-07-01",
+		"--end-date", "2026-07-03",
+		"--data-type", "gdp",
+	})
+	if err != nil {
+		t.Fatalf("parseArgs failed: %v", err)
+	}
+	for key, want := range map[string]any{
+		"yearMonth":  "2026-07",
+		"stock_list": "600237",
+		"startDate":  "2026-07-01",
+		"endDate":    "2026-07-03",
+		"dataType":   "gdp",
+	} {
+		if got := req.Args[key]; got != want {
+			t.Fatalf("%s arg = %#v, want %#v", key, got, want)
 		}
 	}
 }
@@ -59,6 +94,50 @@ func TestParseArgsAppendsBareStockCodeWithSplitCommas(t *testing.T) {
 	}
 	if got := req.Args["stockCode"]; got != "sz300308,sz300502" {
 		t.Fatalf("stockCode arg = %#v, want comma-joined list", got)
+	}
+}
+
+func TestExtractStockCodesFromText(t *testing.T) {
+	got := extractStockCodesFromText("代码 sz002335 / 002506.SZ / sh603690 / 600237 / sz002335")
+	want := []string{"sz002335", "002506.SZ", "sh603690", "600237"}
+	if len(got) != len(want) {
+		t.Fatalf("extractStockCodesFromText len = %d, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("extractStockCodesFromText[%d] = %q, want %q; full=%#v", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestApplyStdinStockCodeTextReplacesDash(t *testing.T) {
+	req, _, err := parseArgs([]string{"tool", "GetStockInfo", "--stock-code", "-"})
+	if err != nil {
+		t.Fatalf("parseArgs failed: %v", err)
+	}
+	if err := applyStdinStockCodeText(&req, "sz002335\nsz002506\n"); err != nil {
+		t.Fatalf("applyStdinStockCodeText failed: %v", err)
+	}
+	if got := req.Args["stockCode"]; got != "sz002335,sz002506" {
+		t.Fatalf("stockCode arg = %#v, want joined stdin codes", got)
+	}
+}
+
+func TestApplyStdinStockCodeTextSetsBothStockKeysForStdinFlag(t *testing.T) {
+	req, _, err := parseArgs([]string{"tool", "GetStockInfo", "--stdin"})
+	if err != nil {
+		t.Fatalf("parseArgs failed: %v", err)
+	}
+	if err := applyStdinStockCodeText(&req, "| 代码 |\n| sh600237 |\n| sz002335 |\n"); err != nil {
+		t.Fatalf("applyStdinStockCodeText failed: %v", err)
+	}
+	for _, key := range []string{"stockCode", "stockCodes"} {
+		if got := req.Args[key]; got != "sh600237,sz002335" {
+			t.Fatalf("%s arg = %#v, want joined stdin codes", key, got)
+		}
+	}
+	if _, ok := req.Args["stdin"]; ok {
+		t.Fatalf("stdin flag should be removed after applying stdin stock codes")
 	}
 }
 

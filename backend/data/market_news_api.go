@@ -1190,8 +1190,16 @@ func (m MarketNewsApi) InvestCalendar(yearMonth string) []any {
 	}
 	//logger.SugaredLogger.Infof("InvestCalendar:%s", resp.Body())
 	respMap := map[string]any{}
-	err = json.Unmarshal(resp.Body(), &respMap)
-	return respMap["data"].([]any)
+	if err = json.Unmarshal(resp.Body(), &respMap); err != nil {
+		logger.SugaredLogger.Errorf("InvestCalendar json err:%s", err.Error())
+		return []any{}
+	}
+	dataList, ok := respMap["data"].([]any)
+	if !ok {
+		logger.SugaredLogger.Errorf("InvestCalendar unexpected response:%s", resp.String())
+		return []any{}
+	}
+	return dataList
 
 }
 

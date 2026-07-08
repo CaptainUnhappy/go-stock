@@ -3,17 +3,19 @@
 本文件是 `go-stock` Skill 的功能目录。当前长期主入口是本地 CLI：
 
 ```powershell
-.\scripts\go-stock-cli.ps1 help
+.\go-stock-cli.exe help
 ```
 
-在 Codex/沙箱环境里优先使用 `scripts\go-stock-cli.ps1`，它会把 Go 构建缓存放到仓库 `.gocache`，避免用户目录 `AppData\Local\go-build` 权限问题。非沙箱环境也可以直接用 `go run ./cmd/go-stock-cli ...`。
+在 Codex/沙箱环境和日常使用中都默认直接运行仓库根目录的 `go-stock-cli.exe`。如果 exe 不存在或需要更新，先运行 `.\scripts\build-windows.ps1` 重新打包；只有源码调试或 exe 缺失时才使用 `.\scripts\go-stock-cli.ps1` 备用包装器，它会把 Go 构建缓存放到仓库 `.gocache`。
 
 Agent 应先用 `go-stock-cli help` 读取功能树，再调用具体命令路径。GUI 主树没有覆盖但原对外 MCP 有的能力，使用 CLI 归档工具兼容层：
 
 ```powershell
-.\scripts\go-stock-cli.ps1 tool list
-.\scripts\go-stock-cli.ps1 tool info --name GetStockInfo
-.\scripts\go-stock-cli.ps1 tool GetStockInfo --stock-code 600237
+.\go-stock-cli.exe tool list
+.\go-stock-cli.exe tool info --name GetStockInfo
+.\go-stock-cli.exe tool GetStockInfo --stock-code 600237
+.\go-stock-cli.exe tool GetStockInfo --stock-code "sz002335,sz002506"
+Get-Content .\watchlist.txt | .\go-stock-cli.exe tool GetStockInfo --stock-code -
 ```
 
 项目本地对外 MCP 服务已归档；旧的 90+ 原始 MCP tools/list 不再是新集成目标。
@@ -21,39 +23,49 @@ Agent 应先用 `go-stock-cli help` 读取功能树，再调用具体命令路�
 ## 默认 CLI 功能树
 
 ```text
-go-stock
-├─ 股票自选
-│  ├─ portfolio list/search/add/remove
-│  ├─ portfolio position get/set
-│  ├─ portfolio group list/add/rename/assign/remove
-│  └─ portfolio view minute/daily-k/multi-k/money/detail/notice/report
-├─ 市场行情
-│  ├─ market news
-│  ├─ market global-index
-│  ├─ market major-index
-│  ├─ market industry-rank gain/money/csrc-money/concept-money
-│  ├─ market money-flow stock
-│  ├─ market money-flow bk list/latest/date/trend
-│  ├─ market money-flow concept list/latest/date/trend
-│  ├─ market billboard/stock-report/announcement/industry-research
-│  └─ market hot global/cn/hk/us/topic/timeline/calendar
-├─ K线分析
-│  ├─ kline search
-│  ├─ kline recent
-│  ├─ kline show
-│  └─ kline signals
-├─ 基金
-│  ├─ fund follow
-│  ├─ fund ranking
-│  └─ fund search/info/kline/nav/holdings
-├─ 研究中心
-│  ├─ research ai-report/recommend/changes/uplimit
-│  ├─ research prompt-template/prompt-plaza/qa-plaza
-│  └─ research pattern-screen/indicator-screen/cron-task/trade-log
-└─ 归档工具兼容层
-   ├─ tool list
-   ├─ tool info
-   └─ tool <原工具名>
+股票自选
+├─ portfolio list/search/add/remove
+├─ portfolio position get/set
+├─ portfolio group list/add/rename/assign/remove
+└─ portfolio view minute/daily-k/multi-k/money/detail/notice/report
+
+市场行情
+├─ market news
+├─ market global-index
+├─ market major-index
+├─ market industry-rank gain/money/csrc-money/concept-money
+├─ market money-flow stock
+├─ market money-flow bk list/latest/date/trend
+├─ market money-flow concept list/latest/date/trend
+├─ market billboard/stock-report/announcement/industry-research
+└─ market hot global/cn/hk/us/topic/timeline/calendar
+
+K线分析
+├─ kline search
+├─ kline recent
+├─ kline show
+└─ kline signals
+
+基金
+├─ fund follow
+├─ fund ranking
+└─ fund search/info/kline/nav/holdings
+
+交易日历
+├─ calendar now
+├─ calendar is-trading-day
+├─ calendar next-trading-day
+└─ calendar holiday/holiday-year/holiday-batch
+
+研究中心
+├─ research ai-report(禁用)/recommend(禁用)/changes/uplimit
+├─ research prompt-template(禁用)/prompt-plaza(禁用)/qa-plaza(禁用)
+└─ research pattern-screen/indicator-screen/cron-task(禁用)/trade-log(禁用)
+
+归档工具兼容层
+├─ tool list
+├─ tool info
+└─ tool <原工具名>
 ```
 
 `名站优选` 不进入 CLI 主功能树。`MCP服务` 是 go-stock GUI 接入外部工具的管理页，也不进入当前项目对外 MCP/CLI 功能树。
@@ -63,20 +75,23 @@ go-stock
 常用 GUI 对齐命令示例：
 
 ```powershell
-.\scripts\go-stock-cli.ps1 market news
-.\scripts\go-stock-cli.ps1 market major-index
-.\scripts\go-stock-cli.ps1 market major-index --name 上证指数
-.\scripts\go-stock-cli.ps1 market industry-rank money --sort netamount --limit 20
-.\scripts\go-stock-cli.ps1 market industry-rank csrc-money --sort netamount --limit 20
-.\scripts\go-stock-cli.ps1 market industry-rank concept-money --sort netamount --limit 20
-.\scripts\go-stock-cli.ps1 market money-flow stock --sort r0_net --limit 20
-.\scripts\go-stock-cli.ps1 kline show --stock-code 002335 --k-line-type day --adjust qfq --limit 120
-.\scripts\go-stock-cli.ps1 kline signals --stock-code 002335 --k-line-type day --adjust qfq --limit 250
-.\scripts\go-stock-cli.ps1 tool GetStockLatestFinance --stockCode='sz002335,sz002506,sh603690'
+.\go-stock-cli.exe market news
+.\go-stock-cli.exe market major-index
+.\go-stock-cli.exe market major-index --name 上证指数
+.\go-stock-cli.exe market industry-rank money --sort netamount --limit 20
+.\go-stock-cli.exe market industry-rank csrc-money --sort netamount --limit 20
+.\go-stock-cli.exe market industry-rank concept-money --sort netamount --limit 20
+.\go-stock-cli.exe market money-flow stock --sort r0_net --limit 20
+.\go-stock-cli.exe kline show --stock-code 002335 --k-line-type day --adjust qfq --limit 120
+.\go-stock-cli.exe kline signals --stock-code 002335 --k-line-type day --adjust qfq --limit 250
+.\go-stock-cli.exe calendar is-trading-day --date 2026-07-03
+.\go-stock-cli.exe calendar next-trading-day --date 2026-07-03
+.\go-stock-cli.exe tool GetStockLatestFinance --stockCode='sz002335,sz002506,sh603690'
 ```
 
 `market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。K 线命令支持 `002335` 这类深市前导 0 代码，不需要强制改成 `sz002335`。
 `kline show` 和 `kline signals` 对齐 GUI K线复权选择：日K及更长周期默认 `--adjust qfq` 前复权，可传 `--adjust hfq` 后复权或 `--adjust none` 不复权；分钟线忽略复权。
+股票池来自文件、上一条 go-stock 输出或 Agent 生成列表时，用 `--stock-code -` 或 `--stdin` 从管道读取；CLI 会自动提取 `sz002335`、`002335.SZ` 和裸 6 位代码并去重保序。
 
 `kline signals` 对齐 GUI K线分析页“指标信号汇总”，输出看多/看空/震荡/中性统计和逐指标标签。
 
@@ -92,6 +107,7 @@ raw tool 参数和盯盘注意事项：
 
 - 股票代码参数可用 `--stockCode`、`--stock-code`、`--stock_code`、`--stockcode`；缺失时 `GetStockInfo` / `GetStockOrderBook` 会直接提示参数错误。
 - PowerShell 多股参数建议加引号，例如 `--stockCode='sh600237,sz002335'`，也可用 `--args-json '{"stockCode":"sh600237,sz002335"}'`。
+- 管道输入用 `--stock-code -` 或 `--stdin`，例如 `Get-Content .\watchlist.txt | .\go-stock-cli.exe tool GetStockInfo --stock-code -`。
 - 盯盘优先用 `tool GetStockInfo`；它包含行情和五档盘口概览。`GetStockOrderBook` 是专用盘口工具，返回空盘口时 CLI 会自动尝试 `GetStockInfo` 兜底。
 - Codex 审批或执行链路出现 `stream disconnected before completion` 时，属于执行失败，不等同于 go-stock 数据源为空；只能复用上一轮成功数据并标明时间。
 - 收盘后盘口仍可能返回最近快照，只能按收盘附近快照理解，不代表仍可成交。
@@ -113,6 +129,17 @@ raw tool 参数和盯盘注意事项：
 | `GetHolidayBatch` | 批量查询多个日期节假日信息。 | 需要一次判断多个日期。 | 日期列表。 |
 | `IsTradingDay` | 判断指定日期是否 A 股交易日。 | 回测、计划任务、查询交易日状态。 | `date`: `YYYY-MM-DD`。 |
 | `GetNextTradingDay` | 查询下一个交易日。 | 用户问“下个交易日”“下一开盘日”。 | `date`: `YYYY-MM-DD`，可省略。 |
+
+优先使用独立 `calendar` 语义命令：
+
+```powershell
+.\go-stock-cli.exe calendar now
+.\go-stock-cli.exe calendar is-trading-day --date 2026-07-03
+.\go-stock-cli.exe calendar next-trading-day --date 2026-07-03
+.\go-stock-cli.exe calendar holiday --date 2026-10-01
+.\go-stock-cli.exe calendar holiday-year --year 2026
+.\go-stock-cli.exe calendar holiday-batch --dates "2026-07-03,2026-10-01"
+```
 
 ## 市场行情、指数、宏观
 
@@ -272,16 +299,13 @@ raw tool 参数和盯盘注意事项：
 | `GetFundHistoryNetValue` | 查询基金历史净值。 | 分析收益、回撤、净值变化。 | 基金代码、日期范围。 |
 | `GetFundTop10Holdings` | 查询基金前十大持仓。 | 看基金持仓风格和集中度。 | 基金代码。 |
 
-## 研究分析与 AI 历史
+## 研究分析
 
 | 工具 | 作用 | 适合什么时候用 | 常见输入提示 |
 |---|---|---|---|
-| `GetAIAnalysisHistory` | 查询 AI 分析历史。 | 用户问历史分析记录。 | 股票代码、分页等。 |
-| `GetAIAnalysisDetail` | 查询 AI 分析详情。 | 查看某条分析记录详情。 | 分析记录 ID。 |
-| `GetAIAnalysisContent` | 查询 AI 分析正文。 | 获取完整分析内容。 | 分析记录 ID。 |
 | `FinancialQA` | 金融问答。 | 用户问金融概念、数据解释。 | 问题文本。 |
 | `ComparableCompanyAnalysis` | 可比公司分析。 | 比较同业估值和财务指标。 | 公司名或股票代码。 |
-| `IndustryResearch` | 行业研究。 | 行业深度、产业趋势、竞争格局。 | 行业/板块关键词。 |
+| `IndustryResearch` | 东方财富 AI 行业研究生成能力，当前不作为 CLI 数据能力开放。 | 不建议调用。 | 改用 `GetIndustryValuation`、`GetSecuritiesCompanyOpinion`、`QueryStockNewsTool` 等只读工具。 |
 | `TrackingReport` | 跟踪报告。 | 个股或行业持续跟踪。 | 对象名称或代码。 |
 | `FinanceDataQuery` | 金融数据自然语言查询。 | 泛化金融数据查询。 | `query`: 自然语言问题。 |
 
@@ -324,6 +348,9 @@ raw tool 参数和盯盘注意事项：
 | `SendToDingDing` | 发送钉钉消息，有外部通知副作用。 |
 | `CreateAiRecommendStocks` | 创建 AI 推荐记录，有写入副作用。 |
 | `BatchCreateAiRecommendStocks` | 批量创建 AI 推荐记录，有写入副作用。 |
-| `AiRecommendStocks` | AI 推荐股票能力，不作为第一版只读数据工具开放。 |
+| `AiRecommendStocks` | AI 推荐记录工具不使用。 |
+| `GetAIAnalysisHistory` | AI 分析历史工具不使用。 |
+| `GetAIAnalysisDetail` | AI 分析详情工具不使用。 |
+| `GetAIAnalysisContent` | AI 分析正文工具不使用。 |
 | `ListMCPServers` / `CreateMCPServer` / `UpdateMCPServer` / `DeleteMCPServer` / `EnableMCPServer` / `TestMCPServer` | 内部 MCP 服务配置管理，不是财经数据工具。 |
 | `ListSkills` / `CreateSkill` / `UpdateSkill` / `DeleteSkill` / `EnableSkill` | 内部 Skill 配置管理，不是财经数据工具。 |

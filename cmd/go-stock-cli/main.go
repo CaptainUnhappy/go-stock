@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -21,6 +23,9 @@ func main() {
 	quietLogger()
 	req, dbPath, err := parseArgs(os.Args[1:])
 	if err != nil {
+		log.Fatal(err)
+	}
+	if err := applyStdinStockCodes(&req); err != nil {
 		log.Fatal(err)
 	}
 	if dbPath == "" {
@@ -146,7 +151,7 @@ func parseArgs(argv []string) (stockcli.Request, string, error) {
 					continue
 				}
 				i++
-				req.Args[normalizedKey] = parseValue(argv[i])
+				req.Args[normalizedKey] = parseArgValue(normalizedKey, argv[i])
 				seenOption = true
 				lastValueKey = normalizedKey
 				continue
@@ -169,12 +174,91 @@ func parseArgs(argv []string) (stockcli.Request, string, error) {
 	return req, dbPath, nil
 }
 
+func applyStdinStockCodes(req *stockcli.Request) error {
+	if !requestsStdinStockCodes(req.Args) {
+		return nil
+	}
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect stdin: %w", err)
+	}
+	if stat.Mode()&os.ModeCharDevice != 0 {
+		return fmt.Errorf("stdin stock code input requested, but no piped input was provided")
+	}
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("read stdin stock codes: %w", err)
+	}
+	return applyStdinStockCodeText(req, string(data))
+}
+
+func requestsStdinStockCodes(args map[string]any) bool {
+	if args == nil {
+		return false
+	}
+	if v, ok := args["stdin"]; ok && truthy(v) {
+		return true
+	}
+	for _, key := range []string{"stockCode", "stockCodes"} {
+		if v, ok := args[key]; ok && strings.TrimSpace(fmt.Sprint(v)) == "-" {
+			return true
+		}
+	}
+	return false
+}
+
+func applyStdinStockCodeText(req *stockcli.Request, text string) error {
+	if req.Args == nil {
+		req.Args = map[string]any{}
+	}
+	codes := extractStockCodesFromText(text)
+	if len(codes) == 0 {
+		return fmt.Errorf("stdin did not contain any recognizable stock codes")
+	}
+	joined := strings.Join(codes, ",")
+	replaced := false
+	for _, key := range []string{"stockCode", "stockCodes"} {
+		if v, ok := req.Args[key]; ok && strings.TrimSpace(fmt.Sprint(v)) == "-" {
+			req.Args[key] = joined
+			replaced = true
+		}
+	}
+	if !replaced {
+		req.Args["stockCode"] = joined
+		req.Args["stockCodes"] = joined
+	}
+	delete(req.Args, "stdin")
+	return nil
+}
+
+var stockCodeFromTextPattern = regexp.MustCompile(`(?i)\b(?:(?:sh|sz|bj)\d{6}|\d{6}\.(?:sh|sz|bj)|\d{6})\b`)
+
+func extractStockCodesFromText(text string) []string {
+	matches := stockCodeFromTextPattern.FindAllString(text, -1)
+	seen := map[string]bool{}
+	codes := make([]string, 0, len(matches))
+	for _, match := range matches {
+		code := strings.TrimSpace(match)
+		if code == "" {
+			continue
+		}
+		key := strings.ToLower(code)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		codes = append(codes, code)
+	}
+	return codes
+}
+
 func setKeyValue(args map[string]any, raw string) error {
 	parts := strings.SplitN(raw, "=", 2)
 	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
 		return fmt.Errorf("argument %q must be key=value", raw)
 	}
-	args[normalizeArgKey(parts[0])] = parseValue(parts[1])
+	key := normalizeArgKey(parts[0])
+	args[key] = parseArgValue(key, parts[1])
 	return nil
 }
 
@@ -188,6 +272,9 @@ func normalizeArgKey(key string) string {
 		"stock-codes":          "stockCodes",
 		"stock_codes":          "stockCodes",
 		"stockcodes":           "stockCodes",
+		"stock-list":           "stock_list",
+		"stock_list":           "stock_list",
+		"stocklist":            "stock_list",
 		"stock_name":           "stockName",
 		"stock-name":           "stockName",
 		"stockname":            "stockName",
@@ -202,6 +289,30 @@ func normalizeArgKey(key string) string {
 		"newname":              "newName",
 		"top-n":                "topN",
 		"top_n":                "topN",
+		"year-month":           "yearMonth",
+		"year_month":           "yearMonth",
+		"yearmonth":            "yearMonth",
+		"start-date":           "startDate",
+		"start_date":           "startDate",
+		"startdate":            "startDate",
+		"end-date":             "endDate",
+		"end_date":             "endDate",
+		"enddate":              "endDate",
+		"trade-date":           "tradeDate",
+		"trade_date":           "tradeDate",
+		"tradedate":            "tradeDate",
+		"data-type":            "dataType",
+		"data_type":            "dataType",
+		"datatype":             "dataType",
+		"mutual-type":          "mutualType",
+		"mutual_type":          "mutualType",
+		"mutualtype":           "mutualType",
+		"market-type":          "marketType",
+		"market_type":          "marketType",
+		"markettype":           "marketType",
+		"fund-type":            "fundType",
+		"fund_type":            "fundType",
+		"fundtype":             "fundType",
 		"page-index":           "pageIndex",
 		"page_index":           "pageIndex",
 		"page-size":            "pageSize",
@@ -244,6 +355,25 @@ func parseBoolLiteral(value string) (bool, bool) {
 		return false, true
 	default:
 		return false, false
+	}
+}
+
+func parseArgValue(key, value string) any {
+	switch key {
+	case "code", "stockCode", "stockCodes", "stock_list", "fundCode":
+		return value
+	default:
+		return parseValue(value)
+	}
+}
+
+func truthy(value any) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	default:
+		parsed, ok := parseBoolLiteral(fmt.Sprint(v))
+		return ok && parsed
 	}
 }
 

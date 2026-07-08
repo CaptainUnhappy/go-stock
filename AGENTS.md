@@ -13,18 +13,18 @@ Before using go-stock data tools, read:
 Use the local CLI from the repository root:
 
 ```powershell
-.\scripts\go-stock-cli.ps1 help
-.\scripts\go-stock-cli.ps1 market news
-.\scripts\go-stock-cli.ps1 tool list
+.\go-stock-cli.exe help
+.\go-stock-cli.exe market news
+.\go-stock-cli.exe tool list
 ```
 
-The wrapper sets `GOCACHE` to the repo-local `.gocache` directory. If you run `go run ./cmd/go-stock-cli ...` directly in a sandboxed Codex session, set a writable project-local `GOCACHE` first.
+Default to the checked-in `go-stock-cli.exe`. If the exe is missing or stale, run `.\scripts\build-windows.ps1` to regenerate it. The source wrapper `.\scripts\go-stock-cli.ps1` remains available only as a fallback; it sets `GOCACHE` to the repo-local `.gocache` directory before running from source.
 
 All migrated archived tools are available through the CLI compatibility layer:
 
 ```powershell
-.\scripts\go-stock-cli.ps1 tool info --name GetStockOrderBook
-.\scripts\go-stock-cli.ps1 tool GetStockOrderBook --stock-code 600237
+.\go-stock-cli.exe tool info --name GetStockOrderBook
+.\go-stock-cli.exe tool GetStockOrderBook --stock-code 600237
 ```
 
 Do not expose or call write/notification/configuration tools such as `SetTradingPrice`, `SendDingDingMessage`, `SendToDingDing`, `CreateAiRecommendStocks`, `BatchCreateAiRecommendStocks`, `AiRecommendStocks`, or MCP/Skill management tools.

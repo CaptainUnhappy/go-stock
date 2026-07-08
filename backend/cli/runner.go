@@ -37,7 +37,7 @@ func commandDefinitions() []Command {
 		read("portfolio view multi-k", "查看多周期K线", r.call("GetEastMoneyKLineWithMA", withDefaults(mapArgs("code", "stockCode"), map[string]any{"kLineType": "day", "limit": 60}))),
 		read("portfolio view money", "查看个股资金", r.call("GetStockMoneyData", nil)),
 		read("portfolio view detail", "查看个股详情", r.call("GetStockInfo", mapArgs("code", "stockCode"))),
-		read("portfolio view notice", "查看个股公告", r.call("GetStockNotice", mapArgs("code", "stockCode"))),
+		read("portfolio view notice", "查看个股公告", r.call("GetStockNotice", mapArgs("code", "stockCodes", "stockCode", "stockCodes"))),
 		read("portfolio view report", "查看个股研报", r.call("GetStockResearchReport", mapArgs("code", "stockCode"))),
 
 		read("market news", "市场快讯", runMarketNews),
@@ -58,15 +58,15 @@ func commandDefinitions() []Command {
 		read("market money-flow concept trend", "概念资金趋势", runConceptTrend),
 		read("market billboard", "龙虎榜", r.call("GetLongTigerList", nil)),
 		read("market stock-report", "个股研报", r.call("GetStockResearchReport", nil)),
-		read("market announcement", "公司公告", r.call("GetStockNotice", nil)),
-		read("market industry-research", "行业研究", r.call("IndustryResearch", nil)),
+		read("market announcement", "公司公告", runMarketAnnouncement(r)),
+		read("market industry-research", "行业研究", infoCommand("行业研究的东方财富 AI 生成工具当前不作为 CLI 数据能力开放。请改用 `tool GetIndustryValuation` 查看行业估值，`tool GetSecuritiesCompanyOpinion` 查看券商观点，或用 `tool QueryStockNewsTool`/公告研报类工具做只读研究。")),
 		read("market hot global", "当前热门-全球", r.call("GetHotStockList", withDefaults(nil, map[string]any{"marketType": "10", "size": 20}))),
 		read("market hot cn", "当前热门-沪深", r.call("GetHotStockList", withDefaults(nil, map[string]any{"marketType": "12", "size": 20}))),
 		read("market hot hk", "当前热门-港股", r.call("GetHotStockList", withDefaults(nil, map[string]any{"marketType": "13", "size": 20}))),
 		read("market hot us", "当前热门-美股", r.call("GetHotStockList", withDefaults(nil, map[string]any{"marketType": "11", "size": 20}))),
 		read("market hot topic", "当前热门-热门话题", runHotTopic),
 		read("market hot timeline", "当前热门-重大事件时间轴", r.call("GetHotEventList", nil)),
-		read("market hot calendar", "当前热门-财经日历", r.call("GetGlobalMarketStatus", nil)),
+		read("market hot calendar", "当前热门-财经日历", runInvestCalendar(r)),
 
 		read("kline search", "K线标的搜索", r.call("QueryStockCodeInfo", mapArgs("keyword", "searchWord"))),
 		read("kline recent", "K线最近查看", runKlineRecent),
@@ -81,17 +81,24 @@ func commandDefinitions() []Command {
 		read("fund nav", "基金净值", r.call("GetFundHistoryNetValue", mapArgs("code", "fundCode"))),
 		read("fund holdings", "基金持仓", r.call("GetFundTop10Holdings", mapArgs("code", "fundCode"))),
 
-		read("research ai-report", "AI分析报告", r.call("GetAIAnalysisHistory", nil)),
-		read("research recommend", "股票推荐记录", runResearchRecommend),
+		read("calendar now", "当前时间", r.call("GetCurrentTime", nil)),
+		read("calendar is-trading-day", "判断是否交易日", r.call("IsTradingDay", nil)),
+		read("calendar next-trading-day", "查询下一交易日", r.call("GetNextTradingDay", mapArgs("date", "startDate"))),
+		read("calendar holiday", "查询节假日", r.call("GetHolidayInfo", nil)),
+		read("calendar holiday-year", "查询年度节假日", r.call("GetHolidayYear", nil)),
+		read("calendar holiday-batch", "批量查询节假日", r.call("GetHolidayBatch", nil)),
+
+		read("research ai-report", "AI分析报告", infoCommand("AI分析报告工具已按项目策略禁用；CLI 不读取历史 AI 分析记录。")),
+		read("research recommend", "股票推荐记录", infoCommand("AI推荐/股票推荐记录工具已按项目策略禁用；CLI 不读取或写入 AI 推荐记录。")),
 		read("research changes", "异动监控", r.call("GetStockChanges", nil)),
 		read("research uplimit", "涨停梯队", runResearchUplimit(r)),
-		read("research prompt-template", "提示词模板", infoCommand("提示词模板属于 GUI 本地管理功能；当前 CLI 不开放模板写入。")),
-		read("research prompt-plaza", "提示词广场", infoCommand("提示词广场依赖 go-stock 应用内服务；当前 CLI 只保留菜单对齐入口。")),
-		read("research qa-plaza", "问答广场", infoCommand("问答广场依赖 go-stock 应用内服务；当前 CLI 只保留菜单对齐入口。")),
+		read("research prompt-template", "提示词模板", infoCommand("提示词模板已按项目策略禁用；CLI 不读取、创建或修改提示词模板。")),
+		read("research prompt-plaza", "提示词广场", infoCommand("提示词广场已按项目策略禁用；CLI 不访问外部提示词广场服务。")),
+		read("research qa-plaza", "问答广场", infoCommand("问答广场已按项目策略禁用；CLI 不访问外部问答广场服务。")),
 		read("research pattern-screen", "形态选股", r.call("FilterStocks", nil)),
 		read("research indicator-screen", "指标选股", r.call("SearchStockByIndicators", mapArgs("query", "query"))),
-		read("research cron-task", "定时任务", infoCommand("定时任务含本地调度副作用；当前 CLI 只保留只读菜单入口。")),
-		read("research trade-log", "交易日志", infoCommand("交易日志含用户交易记录写入；当前 CLI 只保留菜单入口，后续可单独设计确认流。")),
+		read("research cron-task", "定时任务", infoCommand("定时任务已按项目策略禁用；CLI 不查看、创建、执行、暂停或删除本地定时任务。")),
+		read("research trade-log", "交易日志", infoCommand("交易日志已按项目策略禁用；CLI 不读取、创建、更新或删除交易日志。")),
 	}
 	commands = append(commands,
 		read("tool list", "查看归档工具清单", r.runRawToolList),
@@ -278,7 +285,8 @@ func stockCodesFromCLIArgs(args map[string]any) []string {
 
 func isSingleStockArchiveTool(name string) bool {
 	switch name {
-	case "GetStockConceptInfo",
+	case "GetStockInfo",
+		"GetStockConceptInfo",
 		"GetStockLatestFinance",
 		"GetStockQtrMainFinance",
 		"GetStockOrgPredict",
@@ -527,14 +535,16 @@ func rawToolCLIHints(name string) string {
 	case "GetStockInfo":
 		hints = append(hints,
 			"- 推荐盯盘优先调用：`tool GetStockInfo --stock-code sz002335`；该工具包含实时行情和五档盘口概览。",
-			"- PowerShell 多股示例：`.\\scripts\\go-stock-cli.ps1 tool GetStockInfo --stock-code \"sz300308,sz300502\"`。",
+			"- PowerShell 多股示例：`.\\go-stock-cli.exe tool GetStockInfo --stock-code \"sz300308,sz300502\"`。",
+			"- 文件股票池示例：`Get-Content .\\watchlist.txt | .\\go-stock-cli.exe tool GetStockInfo --stock-code -`。",
 			"- `stockCode` 可用 `--stockCode`、`--stock-code`、`--stock_code` 或 `--args-json '{\"stockCode\":\"sz002335\"}'` 传入。",
 		)
 	case "GetStockOrderBook":
 		hints = append(hints,
 			"- 该工具专查五档盘口；若数据源返回空，CLI 会自动尝试用 `GetStockInfo` 兜底。",
 			"- 盯盘优先使用 `tool GetStockInfo`；需要单独盘口字段时再调用本工具。",
-			"- PowerShell 多股示例：`.\\scripts\\go-stock-cli.ps1 tool GetStockOrderBook --stock-code \"sz300308,sz300502\"`。",
+			"- PowerShell 多股示例：`.\\go-stock-cli.exe tool GetStockOrderBook --stock-code \"sz300308,sz300502\"`。",
+			"- 文件股票池示例：`Get-Content .\\watchlist.txt | .\\go-stock-cli.exe tool GetStockOrderBook --stock-code -`。",
 			"- `stockCode` 可用 `--stockCode`、`--stock-code`、`--stock_code` 或 `--args-json '{\"stockCode\":\"sz002335\"}'` 传入。",
 		)
 	case "GetStockLatestFinance":
@@ -548,7 +558,7 @@ func rawToolCLIHints(name string) string {
 		)
 	}
 	if hasStockCodeLikeInput(name) {
-		hints = append(hints, "- PowerShell 中逗号分隔参数建议加引号，例如 `--stockCode='sh600237,sz002335'`。")
+		hints = append(hints, "- PowerShell 中逗号分隔参数建议加引号，例如 `--stockCode='sh600237,sz002335'`；从管道读取股票代码时使用 `--stock-code -` 或 `--stdin`。")
 	}
 	if len(hints) == 0 {
 		return ""
@@ -564,7 +574,7 @@ func rawToolCLIParamAliases(name string) string {
 	b.WriteString("| JSON Schema 字段 | 推荐 CLI 参数 | 兼容 CLI 参数 |\n")
 	b.WriteString("| --- | --- | --- |\n")
 	if hasStockCodeLikeInput(name) {
-		b.WriteString("| `stockCode` | `--stock-code` | `--stockCode`, `--stock_code`, `--stockcode`, `--args-json '{\"stockCode\":\"...\"}'` |\n")
+		b.WriteString("| `stockCode` | `--stock-code` | `--stockCode`, `--stock_code`, `--stockcode`, `--stock-code -`, `--stdin`, `--args-json '{\"stockCode\":\"...\"}'` |\n")
 	}
 	if hasAdjustFlagInput(name) {
 		b.WriteString("| `adjustFlag` | `--adjust` | `--adjust-flag`, `--adjustFlag`, `--adjust_flag`, `--args-json '{\"adjustFlag\":\"qfq\"}'` |\n")
@@ -616,7 +626,10 @@ var blockedRawToolReasons = map[string]string{
 	"SendToDingDing":               "外部通知副作用，CLI 默认不开放。",
 	"CreateAiRecommendStocks":      "AI 推荐写入副作用，CLI 默认不开放。",
 	"BatchCreateAiRecommendStocks": "AI 推荐批量写入副作用，CLI 默认不开放。",
-	"AiRecommendStocks":            "旧对外 MCP denylist 工具；CLI 保留 `research recommend` 作为业务菜单入口，不提供 raw tool 直连。",
+	"AiRecommendStocks":            "AI 推荐记录工具已按项目策略禁用，不提供 raw tool 直连。",
+	"GetAIAnalysisHistory":         "AI 分析历史工具已按项目策略禁用，不提供 raw tool 直连。",
+	"GetAIAnalysisDetail":          "AI 分析详情工具已按项目策略禁用，不提供 raw tool 直连。",
+	"GetAIAnalysisContent":         "AI 分析正文工具已按项目策略禁用，不提供 raw tool 直连。",
 	"SetFollowedStockPosition":     "受控持仓写入已迁移到 `portfolio position set`，不提供 raw tool 直连。",
 }
 
@@ -673,6 +686,8 @@ func normalizeCommonArgs(args map[string]any) {
 		"stock-codes":          "stockCodes",
 		"stock_codes":          "stockCodes",
 		"stockcodes":           "stockCodes",
+		"stock-list":           "stock_list",
+		"stocklist":            "stock_list",
 		"stock-name":           "stockName",
 		"stock_name":           "stockName",
 		"stockname":            "stockName",
@@ -687,6 +702,30 @@ func normalizeCommonArgs(args map[string]any) {
 		"newname":              "newName",
 		"top-n":                "topN",
 		"top_n":                "topN",
+		"year-month":           "yearMonth",
+		"year_month":           "yearMonth",
+		"yearmonth":            "yearMonth",
+		"start-date":           "startDate",
+		"start_date":           "startDate",
+		"startdate":            "startDate",
+		"end-date":             "endDate",
+		"end_date":             "endDate",
+		"enddate":              "endDate",
+		"trade-date":           "tradeDate",
+		"trade_date":           "tradeDate",
+		"tradedate":            "tradeDate",
+		"data-type":            "dataType",
+		"data_type":            "dataType",
+		"datatype":             "dataType",
+		"mutual-type":          "mutualType",
+		"mutual_type":          "mutualType",
+		"mutualtype":           "mutualType",
+		"market-type":          "marketType",
+		"market_type":          "marketType",
+		"markettype":           "marketType",
+		"fund-type":            "fundType",
+		"fund_type":            "fundType",
+		"fundtype":             "fundType",
 		"page-size":            "pageSize",
 		"page_size":            "pageSize",
 		"page-index":           "pageIndex",
@@ -717,6 +756,81 @@ func normalizeCommonArgs(args map[string]any) {
 			args[to] = v
 		}
 	}
+	normalizeStockCodeArgs(args)
+}
+
+func normalizeStockCodeArgs(args map[string]any) {
+	for _, key := range []string{"stockCode", "stockCodes", "stock_list"} {
+		if v, ok := args[key]; ok {
+			args[key] = normalizeStockCodeArgValue(v)
+		}
+	}
+}
+
+func normalizeStockCodeArgValue(value any) any {
+	switch typed := value.(type) {
+	case []string:
+		normalized := make([]string, 0, len(typed))
+		for _, code := range typed {
+			normalized = append(normalized, normalizeStockCodeToken(code))
+		}
+		return normalized
+	case []any:
+		normalized := make([]any, 0, len(typed))
+		for _, code := range typed {
+			normalized = append(normalized, normalizeStockCodeToken(fmt.Sprint(code)))
+		}
+		return normalized
+	default:
+		raw := fmt.Sprint(value)
+		parts := strings.FieldsFunc(raw, func(r rune) bool {
+			return r == ',' || r == '，' || r == ';' || r == '；' || r == ' ' || r == '\t' || r == '\r' || r == '\n'
+		})
+		if len(parts) <= 1 {
+			return normalizeStockCodeToken(raw)
+		}
+		normalized := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if code := normalizeStockCodeToken(part); code != "" {
+				normalized = append(normalized, code)
+			}
+		}
+		return strings.Join(normalized, ",")
+	}
+}
+
+func normalizeStockCodeToken(code string) string {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return ""
+	}
+	lower := strings.ToLower(code)
+	if isBareSixDigitCode(lower) ||
+		strings.HasSuffix(lower, ".sz") ||
+		strings.HasSuffix(lower, ".sh") ||
+		strings.HasSuffix(lower, ".bj") ||
+		strings.HasSuffix(lower, ".hk") ||
+		strings.HasPrefix(lower, "sh") ||
+		strings.HasPrefix(lower, "sz") ||
+		strings.HasPrefix(lower, "bj") ||
+		strings.HasPrefix(lower, "hk") ||
+		strings.HasPrefix(lower, "us") ||
+		strings.HasPrefix(lower, "gb_") {
+		return data.NormalizeFollowedStockCode(code)
+	}
+	return code
+}
+
+func isBareSixDigitCode(code string) bool {
+	if len(code) != 6 {
+		return false
+	}
+	for _, r := range code {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func requiredString(args map[string]any, names ...string) (string, error) {
@@ -903,6 +1017,10 @@ func runMajorIndex(ctx context.Context, args map[string]any) (string, error) {
 		}
 		names := make([]string, 0, len(majorIndexNodes()))
 		for _, node := range majorIndexNodes() {
+			if node.Example != "" {
+				names = append(names, fmt.Sprintf("- %s：`%s`", node.Label, node.Example))
+				continue
+			}
 			names = append(names, "- "+node.Label)
 		}
 		return out + "\n\n## 重大指数单独查询\n\n传入 `name` 或 `code` 可查询指定指数 K 线。支持：\n\n" + strings.Join(names, "\n"), nil
@@ -919,6 +1037,73 @@ func runMajorIndex(ctx context.Context, args map[string]any) (string, error) {
 		"kLineType": "day",
 		"limit":     optionalInt(args, "limit", 60),
 	}))(ctx, args)
+}
+
+func runMarketAnnouncement(r *toolRunner) Handler {
+	return func(ctx context.Context, args map[string]any) (string, error) {
+		normalizeCommonArgs(args)
+		if stockList := optionalString(args, "stock_list", ""); stockList != "" {
+			mapped := cloneArgs(args)
+			mapped["stock_list"] = stockList
+			return r.call("StockNotice", nil)(ctx, mapped)
+		}
+
+		stockCodes := optionalString(args, "stockCodes", optionalString(args, "stockCode", ""))
+		if stockCodes != "" {
+			mapped := cloneArgs(args)
+			mapped["stockCodes"] = stockCodes
+			return r.call("GetStockNotice", nil)(ctx, mapped)
+		}
+
+		mapped := cloneArgs(args)
+		mapped["stock_list"] = ""
+		out, err := r.call("StockNotice", nil)(ctx, mapped)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(out) == "" {
+			return "暂无公司公告数据。查询单股公告可用 `market announcement --stock-code 600237` 或 `portfolio view notice --stock-code 600237`。", nil
+		}
+		return out, nil
+	}
+}
+
+func runInvestCalendar(r *toolRunner) Handler {
+	return func(ctx context.Context, args map[string]any) (string, error) {
+		normalizeCommonArgs(args)
+		out, err := r.call("GetInvestCalendar", nil)(ctx, args)
+		if err == nil && strings.TrimSpace(out) != "" && !strings.Contains(out, "暂无投资日历数据") {
+			return out, nil
+		}
+
+		var b strings.Builder
+		if strings.TrimSpace(out) != "" {
+			b.WriteString(strings.TrimSpace(out))
+			b.WriteString("\n\n")
+		}
+		if err != nil {
+			b.WriteString("九阳公社投资日历源当前异常，已尝试华尔街见闻财经日历兜底。\n\n")
+		} else {
+			b.WriteString("投资日历源当前无数据，已尝试华尔街见闻财经日历兜底。\n\n")
+		}
+
+		fallback, fallbackErr := r.call("GetWallstreetcnCalendar", nil)(ctx, args)
+		if fallbackErr == nil && strings.TrimSpace(fallback) != "" {
+			b.WriteString("## 全球财经日历兜底\n\n")
+			b.WriteString(strings.TrimSpace(fallback))
+			return b.String(), nil
+		}
+		if err != nil {
+			b.WriteString("兜底财经日历也暂不可用：")
+			b.WriteString(err.Error())
+			if fallbackErr != nil {
+				b.WriteString("；")
+				b.WriteString(fallbackErr.Error())
+			}
+			return b.String(), nil
+		}
+		return out, nil
+	}
 }
 
 func runResearchUplimit(r *toolRunner) Handler {

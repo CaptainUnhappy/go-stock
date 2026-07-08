@@ -45,6 +45,29 @@ func TestCommandTreeExcludesRemovedGUIItems(t *testing.T) {
 	}
 }
 
+func TestCommandTreeRendersIndentedHierarchy(t *testing.T) {
+	help := RenderHelp()
+	if strings.Contains(help, "\ngo-stock\n") {
+		t.Fatalf("help should not render the synthetic go-stock root node:\n%s", help)
+	}
+	for _, required := range []string{
+		"\n股票自选\n",
+		"├─ 自选列表",
+		"│  ├─ 查看全部  `portfolio list`",
+		"\n市场行情\n",
+		"├─ 市场快讯  `market news`",
+		"│  ├─ 主要股指",
+		"├─ 重大指数  `market major-index`",
+		"\n交易日历\n",
+		"├─ 当前时间  `calendar now`",
+		"├─ 是否交易日  `calendar is-trading-day`",
+	} {
+		if !strings.Contains(help, required) {
+			t.Fatalf("help missing tree indentation %q:\n%s", required, help)
+		}
+	}
+}
+
 func TestCommandTreeCoversConfirmedMarketItems(t *testing.T) {
 	help := RenderHelp()
 	for _, required := range []string{
@@ -58,12 +81,44 @@ func TestCommandTreeCoversConfirmedMarketItems(t *testing.T) {
 		"异动排行",
 		"利好/利空排行",
 		"快讯列表",
-		"富时中国三倍做多",
-		"VIX恐慌指数",
 		"基金排行",
 	} {
 		if !strings.Contains(help, required) {
 			t.Fatalf("help missing %q", required)
+		}
+	}
+}
+
+func TestCommandTreeDoesNotExpandMajorIndexItems(t *testing.T) {
+	help := RenderHelp()
+	for _, forbidden := range []string{
+		"│  ├─ 上证指数  `market major-index --name 上证指数`",
+		"│  └─ VIX恐慌指数  `market major-index --name VIX恐慌指数`",
+	} {
+		if strings.Contains(help, forbidden) {
+			t.Fatalf("help should not expand major index item %q:\n%s", forbidden, help)
+		}
+	}
+}
+
+func TestCommandTreeDoesNotExpandStockMoneyFlowItems(t *testing.T) {
+	help := RenderHelp()
+	if !strings.Contains(help, "├─ 个股资金流向  `market money-flow stock`") {
+		t.Fatalf("help missing stock money flow command:\n%s", help)
+	}
+	for _, forbidden := range []string{
+		"净流入额排名",
+		"流出资金排名",
+		"净流入率排名",
+		"主力净流入额排名",
+		"主力流出排名",
+		"主力净流入率排名",
+		"散户净流入额排名",
+		"散户流出排名",
+		"散户净流入率排名",
+	} {
+		if strings.Contains(help, forbidden) {
+			t.Fatalf("help should not expand stock money flow item %q:\n%s", forbidden, help)
 		}
 	}
 }
@@ -88,6 +143,12 @@ func TestRunnerRegistersExecutableCommands(t *testing.T) {
 		"portfolio position set",
 		"portfolio group rename",
 		"fund ranking",
+		"calendar now",
+		"calendar is-trading-day",
+		"calendar next-trading-day",
+		"calendar holiday",
+		"calendar holiday-year",
+		"calendar holiday-batch",
 		"kline show",
 		"kline signals",
 		"tool list",
@@ -96,6 +157,136 @@ func TestRunnerRegistersExecutableCommands(t *testing.T) {
 		if !paths[required] {
 			t.Fatalf("runner missing executable command %q", required)
 		}
+	}
+}
+
+func TestDisabledResearchMenuCommandsReturnDisabledMessage(t *testing.T) {
+	ensureTestDB(t)
+	runner, err := NewRunner()
+	if err != nil {
+		t.Fatalf("NewRunner failed: %v", err)
+	}
+	for _, path := range []string{
+		"research prompt-template",
+		"research prompt-plaza",
+		"research qa-plaza",
+		"research cron-task",
+		"research trade-log",
+	} {
+		result, err := runner.Run(context.Background(), Request{CommandPath: path})
+		if err != nil {
+			t.Fatalf("%s failed: %v", path, err)
+		}
+		if !strings.Contains(result.Output, "禁用") {
+			t.Fatalf("%s output = %q, want disabled message", path, result.Output)
+		}
+	}
+}
+
+func TestMarketAnnouncementRoutesStockCodeToStockNotice(t *testing.T) {
+	notice := &staticInvokableTool{output: "个股公告"}
+	stockNotice := &staticInvokableTool{output: "市场公告"}
+	r := &toolRunner{
+		tools: map[string]einotool.InvokableTool{
+			"GetStockNotice": notice,
+			"StockNotice":    stockNotice,
+		},
+	}
+
+	out, err := runMarketAnnouncement(r)(context.Background(), map[string]any{
+		"stock-code": "600237",
+	})
+	if err != nil {
+		t.Fatalf("market announcement failed: %v", err)
+	}
+	if out != "个股公告" {
+		t.Fatalf("output = %q, want stock notice output", out)
+	}
+	if len(notice.calls) != 1 || !strings.Contains(notice.calls[0], `"stockCodes":"sh600237"`) {
+		t.Fatalf("GetStockNotice calls = %#v, want stockCodes mapping", notice.calls)
+	}
+	if len(stockNotice.calls) != 0 {
+		t.Fatalf("StockNotice should not run for stock-code input, calls=%#v", stockNotice.calls)
+	}
+}
+
+func TestMarketAnnouncementWithoutStockCodeUsesMarketNotice(t *testing.T) {
+	stockNotice := &staticInvokableTool{output: "市场公告"}
+	r := &toolRunner{
+		tools: map[string]einotool.InvokableTool{
+			"StockNotice": stockNotice,
+		},
+	}
+
+	out, err := runMarketAnnouncement(r)(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatalf("market announcement failed: %v", err)
+	}
+	if out != "市场公告" {
+		t.Fatalf("output = %q, want market notice output", out)
+	}
+	if len(stockNotice.calls) != 1 || !strings.Contains(stockNotice.calls[0], `"stock_list":""`) {
+		t.Fatalf("StockNotice calls = %#v, want empty stock_list market query", stockNotice.calls)
+	}
+}
+
+func TestInvestCalendarUsesCalendarTool(t *testing.T) {
+	investCalendar := &staticInvokableTool{output: "投资日历"}
+	globalIndex := &staticInvokableTool{output: "全球指数"}
+	r := &toolRunner{
+		tools: map[string]einotool.InvokableTool{
+			"GetInvestCalendar":       investCalendar,
+			"GetGlobalMarketStatus":   globalIndex,
+			"GetWallstreetcnCalendar": &staticInvokableTool{output: "兜底日历"},
+		},
+	}
+
+	out, err := runInvestCalendar(r)(context.Background(), map[string]any{
+		"year-month": "2026-07",
+	})
+	if err != nil {
+		t.Fatalf("invest calendar failed: %v", err)
+	}
+	if out != "投资日历" {
+		t.Fatalf("output = %q, want invest calendar output", out)
+	}
+	if len(investCalendar.calls) != 1 || !strings.Contains(investCalendar.calls[0], `"yearMonth":"2026-07"`) {
+		t.Fatalf("GetInvestCalendar calls = %#v, want yearMonth mapping", investCalendar.calls)
+	}
+	if len(globalIndex.calls) != 0 {
+		t.Fatalf("GetGlobalMarketStatus should not be called for market hot calendar")
+	}
+}
+
+func TestNormalizeCommonArgsForCalendarAndNoticeAliases(t *testing.T) {
+	args := map[string]any{
+		"stock-list": "600237",
+		"year-month": "2026-07",
+		"start-date": "2026-07-01",
+		"end-date":   "2026-07-03",
+		"data-type":  "gdp",
+	}
+	normalizeCommonArgs(args)
+	for key, want := range map[string]any{
+		"stock_list": "sh600237",
+		"yearMonth":  "2026-07",
+		"startDate":  "2026-07-01",
+		"endDate":    "2026-07-03",
+		"dataType":   "gdp",
+	} {
+		if got := args[key]; got != want {
+			t.Fatalf("%s = %#v, want %#v", key, got, want)
+		}
+	}
+}
+
+func TestNormalizeCommonArgsPrefixesBareAStockCodes(t *testing.T) {
+	args := map[string]any{
+		"stockCode": "600237 002335,430047,100.HSI",
+	}
+	normalizeCommonArgs(args)
+	if got := args["stockCode"]; got != "sh600237,sz002335,bj430047,100.HSI" {
+		t.Fatalf("stockCode = %#v, want prefixed A-share codes and untouched HSI", got)
 	}
 }
 
@@ -226,6 +417,29 @@ func TestToolRunnerSplitsSingleStockArchiveToolCalls(t *testing.T) {
 	}
 }
 
+func TestToolRunnerSplitsGetStockInfoCalls(t *testing.T) {
+	fake := &fakeInvokableTool{}
+	r := &toolRunner{
+		tools: map[string]einotool.InvokableTool{
+			"GetStockInfo": fake,
+		},
+	}
+	out, err := r.call("GetStockInfo", nil)(context.Background(), map[string]any{
+		"stockCodes": "sz002335 sz002506,sh603690",
+	})
+	if err != nil {
+		t.Fatalf("GetStockInfo split call failed: %v", err)
+	}
+	for _, code := range []string{"sz002335", "sz002506", "sh603690"} {
+		if !strings.Contains(out, "## "+code) {
+			t.Fatalf("output missing section for %s: %s", code, out)
+		}
+	}
+	if len(fake.calls) != 3 {
+		t.Fatalf("fake tool calls = %d, want 3", len(fake.calls))
+	}
+}
+
 func TestRawToolRequiresStockCodeBeforeInvoke(t *testing.T) {
 	fake := &staticInvokableTool{output: "should not run"}
 	r := &toolRunner{
@@ -271,7 +485,7 @@ func TestOrderBookFallsBackToStockInfo(t *testing.T) {
 }
 
 func TestSingleStockArchiveToolClassification(t *testing.T) {
-	for _, name := range []string{"GetStockLatestFinance", "GetStockConceptInfo"} {
+	for _, name := range []string{"GetStockInfo", "GetStockLatestFinance", "GetStockConceptInfo"} {
 		if !isSingleStockArchiveTool(name) {
 			t.Fatalf("%s should be classified as single-stock archive tool", name)
 		}

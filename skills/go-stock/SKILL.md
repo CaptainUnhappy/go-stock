@@ -1,6 +1,6 @@
 ---
 name: go-stock
-description: Use when an agent needs to work with local go-stock financial data through go-stock-cli. Default usage is the local CLI with GUI-aligned command paths and the migrated raw tool layer for Chinese stock, market行情, K线, 基金, 自选持仓, 研报, 公告, 资金流, 条件选股, 涨停热点, and research workflows.
+description: Use when an agent needs to work with local go-stock financial data through go-stock-cli. Default usage is the local CLI with GUI-aligned command paths and the migrated raw tool layer for Chinese stock, market行情, K线, 基金, 交易日历, 自选持仓, 研报, 公告, 资金流, 条件选股, 涨停热点, and research workflows.
 ---
 
 # Go Stock CLI
@@ -9,8 +9,8 @@ description: Use when an agent needs to work with local go-stock financial data 
 
 当前长期主入口是本地 CLI，不是 MCP：
 
-1. `.\scripts\go-stock-cli.ps1 help`：读取 GUI 对齐的 CLI 功能树和命令路径；Codex/沙箱环境优先用这个脚本。
-2. `.\scripts\go-stock-cli.ps1 <commandPath> ...`：调用具体功能。
+1. `.\go-stock-cli.exe help`：读取 GUI 对齐的 CLI 功能树和命令路径；Codex/沙箱环境和日常使用都默认用这个 exe。
+2. `.\go-stock-cli.exe <commandPath> ...`：调用具体功能。
 3. GUI 主树没有覆盖但归档工具层有的能力，用 `tool list`、`tool info`、`tool <原工具名>`。
 
 旧的原始对外 MCP 工具已经迁移到 CLI 归档工具层：先用 `tool list` 查看清单，用 `tool info --name 工具名` 查看参数，再用 `tool 工具名` 调用。例如 `tool GetStockInfo`。项目本地对外 MCP 服务已归档，不再作为新集成目标。
@@ -20,28 +20,31 @@ description: Use when an agent needs to work with local go-stock financial data 
 在仓库根目录运行：
 
 ```powershell
-.\scripts\go-stock-cli.ps1 help
-.\scripts\go-stock-cli.ps1 market news
-.\scripts\go-stock-cli.ps1 market major-index
-.\scripts\go-stock-cli.ps1 market major-index --name 上证指数
-.\scripts\go-stock-cli.ps1 market industry-rank concept-money --sort netamount --limit 20
-.\scripts\go-stock-cli.ps1 market money-flow stock --sort r0_net --limit 20
-.\scripts\go-stock-cli.ps1 kline show --stock-code 002335 --k-line-type day --adjust qfq --limit 120
-.\scripts\go-stock-cli.ps1 kline signals --stock-code 002335 --k-line-type day --adjust qfq --limit 250
-.\scripts\go-stock-cli.ps1 portfolio list
-.\scripts\go-stock-cli.ps1 portfolio group rename --group-id 1 --new-name 短线观察
-.\scripts\go-stock-cli.ps1 portfolio position set --stock-code 600237 --cost-price 12.56 --volume 300
-.\scripts\go-stock-cli.ps1 fund ranking --page-size 20
-.\scripts\go-stock-cli.ps1 tool list
-.\scripts\go-stock-cli.ps1 tool info --name GetStockInfo
-.\scripts\go-stock-cli.ps1 tool GetStockInfo --stock-code 600237
-.\scripts\go-stock-cli.ps1 tool GetStockInfo --stock-code "sz300308,sz300502"
+.\go-stock-cli.exe help
+.\go-stock-cli.exe market news
+.\go-stock-cli.exe market major-index
+.\go-stock-cli.exe market major-index --name 上证指数
+.\go-stock-cli.exe market industry-rank concept-money --sort netamount --limit 20
+.\go-stock-cli.exe market money-flow stock --sort r0_net --limit 20
+.\go-stock-cli.exe kline show --stock-code 002335 --k-line-type day --adjust qfq --limit 120
+.\go-stock-cli.exe kline signals --stock-code 002335 --k-line-type day --adjust qfq --limit 250
+.\go-stock-cli.exe portfolio list
+.\go-stock-cli.exe portfolio group rename --group-id 1 --new-name 短线观察
+.\go-stock-cli.exe portfolio position set --stock-code 600237 --cost-price 12.56 --volume 300
+.\go-stock-cli.exe fund ranking --page-size 20
+.\go-stock-cli.exe calendar is-trading-day --date 2026-07-03
+.\go-stock-cli.exe calendar next-trading-day --date 2026-07-03
+.\go-stock-cli.exe tool list
+.\go-stock-cli.exe tool info --name GetStockInfo
+.\go-stock-cli.exe tool GetStockInfo --stock-code 600237
+.\go-stock-cli.exe tool GetStockInfo --stock-code "sz300308,sz300502"
+Get-Content .\watchlist.txt | .\go-stock-cli.exe tool GetStockInfo --stock-code -
 ```
 
 JSON 输出：
 
 ```powershell
-.\scripts\go-stock-cli.ps1 --json market major-index
+.\go-stock-cli.exe --json market major-index
 ```
 
 常用环境变量：
@@ -51,7 +54,7 @@ GO_STOCK_DB=可选；不设置时默认读取系统用户目录下的 go-stock/d
 GO_STOCK_CLI_VERBOSE=true；可选，打开 CLI 调试日志
 ```
 
-如果直接运行 `go run ./cmd/go-stock-cli ...`，需要确保 `GOCACHE` 可写；Codex/沙箱内优先使用 `scripts\go-stock-cli.ps1`，它会自动把 Go 构建缓存放到仓库 `.gocache`。
+默认直接使用仓库根目录的 `go-stock-cli.exe`。如果 exe 不存在或需要更新，先运行 `.\scripts\build-windows.ps1` 重新打包；只有源码调试或 exe 缺失时才使用 `.\scripts\go-stock-cli.ps1` 备用包装器，它会把 Go 构建缓存放到仓库 `.gocache`。
 
 ## 功能目录
 
@@ -67,15 +70,19 @@ skills/go-stock/references/tool-catalog.md
 
 - 默认先运行 `go-stock-cli help` 看功能树，再调用具体命令路径。
 - GUI 主树没有覆盖但归档工具层有的能力，用 `tool list` -> `tool info` -> `tool 工具名`。盯盘优先用 `tool GetStockInfo`，它包含五档盘口概览；`GetStockOrderBook` 只作为专用盘口补充工具。
+- 股票参数默认使用 CLI 风格 `--stock-code`。多股票可写成 `--stock-code "sz002335,sz002506"`，也可用管道：`Get-Content .\watchlist.txt | .\go-stock-cli.exe tool GetStockInfo --stock-code -`。当接上一条 go-stock 输出时，也可以用 `--stdin` 自动提取代码。
 - 股票名称、简称、拼音或代码不确定时，用 `portfolio search` 或 `kline search` 确认。
 - 市场复盘优先：`market news` -> `market major-index` -> `market money-flow stock` -> `research uplimit`。`market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。
 - 个股分析优先：`portfolio view detail` -> `portfolio view daily-k`/`kline show` -> `portfolio view money` -> `portfolio view notice`/`portfolio view report`。
 - 资金流按 GUI 对齐：个股资金 9 标签用 `market money-flow stock` 的 `sort` 参数；板块资金用 `market money-flow bk ...`；概念资金用 `market money-flow concept ...`。
 - 基金使用 `fund follow` 和 `fund ranking`；基金搜索、详情、K线、净值、持仓分别用 `fund search/info/kline/nav/holdings`。
+- 交易日历使用独立 `calendar` 一级菜单：当前时间用 `calendar now`，判断交易日用 `calendar is-trading-day --date YYYY-MM-DD`，下一交易日用 `calendar next-trading-day --date YYYY-MM-DD`，节假日用 `calendar holiday/holiday-year/holiday-batch`。
 - 用户明确要管理自选分组时，用 `portfolio group list/add/rename/assign/remove`；重命名分组用 `portfolio group rename --group-id <ID> --new-name <新名称>`。
 - 用户给持仓并要求 Agent 设置提醒时，使用 `portfolio position set`，先生成预览，用户二次确认后再带确认令牌写入。
 - 未显式传入 `sort` 时，新关注/新建持仓记录默认排序为 `99`；用户给当前持仓截图并要求更新持仓时，截图内持仓按持有成本排序，截图未出现但仍关注的标的保持默认 `99`。
 - `MCP服务` 和 `名站优选` 不属于新 CLI 主功能树。
+- 不使用 AI 分析/AI 推荐工具。`research ai-report`、`research recommend` 只保留禁用说明；不要调用 `GetAIAnalysisHistory`、`GetAIAnalysisDetail`、`GetAIAnalysisContent`、`AiRecommendStocks`。
+- 不使用提示词模板、提示词广场、问答广场、定时任务和交易日志 CLI 入口。`research prompt-template`、`research prompt-plaza`、`research qa-plaza`、`research cron-task`、`research trade-log` 只保留禁用说明。
 
 ## 归档工具层选择规则
 
@@ -84,9 +91,9 @@ skills/go-stock/references/tool-catalog.md
 - 股票名称、简称、拼音或代码不确定时，先用 `QueryStockCodeInfo` 确认标准代码。
 - 板块、行业、概念不确定时，先用 `QueryBKDictInfo` 或 `SearchBk`。
 - 个股分析按顺序组合：行情/K线 -> 财务/F10 -> 资金流/龙虎榜 -> 新闻/公告/研报 -> 风险点。
-- 只需要当前时间时用 `GetCurrentTime`；需要全球指数和开盘状态时用 `GetGlobalMarketStatus`，不要把两类信息混在一个上下文里。
+- 只需要当前时间时用 `calendar now`；需要判断 A 股交易日时用 `calendar is-trading-day`；需要全球指数和开盘状态时用 `GetGlobalMarketStatus`，不要把两类信息混在一个上下文里。
 - 需要买一/卖一、五档委托、封单或盘口深度时，先用 `GetStockInfo`；它比专用 `GetStockOrderBook` 更适合盯盘且包含盘口概览。若必须查独立盘口字段，再调用 `GetStockOrderBook`；该工具返回空盘口时 CLI 会自动尝试 `GetStockInfo` 兜底。
-- raw tool 股票参数可用 `--stockCode`、`--stock-code`、`--stock_code` 或 `--stockcode`；多股参数在 PowerShell 中建议加引号，例如 `--stockCode='sh600237,sz002335'`，或使用 `--args-json`。
+- raw tool 股票参数可用 `--stockCode`、`--stock-code`、`--stock_code` 或 `--stockcode`；多股参数在 PowerShell 中建议加引号，例如 `--stockCode='sh600237,sz002335'`，或使用 `--args-json`。如果股票池来自文件、上一条 CLI 输出或 Agent 生成的列表，用 `--stock-code -` 或 `--stdin` 从管道读取。
 - `tool info --name GetStockInfo` 会同时展示原 JSON Schema 字段和推荐 CLI 参数名；Agent 优先使用 `--stock-code`，只有需要完全复刻原工具参数时再看 `stockCode`。
 - 市场复盘按顺序组合：市场总览 -> 全球股指/北向资金 -> 异动排行 -> 热点事件 -> 涨停梯队。
 - 条件选股优先用 `SearchStockByIndicators` 处理自然语言条件；需要结构化技术形态时用 `FilterStocks`。
@@ -147,7 +154,7 @@ skills/go-stock/references/tool-catalog.md
 | 技术条件筛选 | `FilterStocks` | MACD、KDJ、均线、连涨连跌等条件筛选。 |
 | 基金资料 | `SearchFund` / `GetFundInfo` | 搜索基金并查询基础信息。 |
 | 基金持仓 | `GetFundTop10Holdings` | 查询基金前十大持仓。 |
-| 行业研究 | `IndustryResearch` / `GetIndustryValuation` | 行业研究内容和估值。 |
+| 行业研究 | `GetIndustryValuation` / `GetSecuritiesCompanyOpinion` / `QueryStockNewsTool` | 行业估值、券商观点和新闻研报只读研究。 |
 | 可比公司 | `ComparableCompanyAnalysis` | 对公司做可比公司分析。 |
 | 设置持仓提醒 | `portfolio position set` | CLI 受控写入命令；必须二次确认。 |
 
@@ -188,7 +195,7 @@ skills/go-stock/references/tool-catalog.md
 1. `QueryBKDictInfo` 或 `SearchBk` 确认行业/板块。
 2. “行业排名”页：行业涨幅用 `GetIndustryRank`；行业资金、证监会行业资金、概念板块资金用 `GetIndustryMoneyRank`。
 3. 顶层“板块资金流向”用 `GetAllBKCodes`, `GetBKFundFlowTopListByDate`, `GetBKFundFlowListByDate`。
-4. `GetIndustryValuation`, `IndustryResearch` 查看估值和研究内容。
+4. `GetIndustryValuation`, `GetSecuritiesCompanyOpinion`, `QueryStockNewsTool` 查看估值、券商观点和新闻研报线索；不要调用东方财富 AI 生成类 `IndustryResearch`。
 5. `FinanceSearch` 搜索政策、公告、研报和新闻。
 6. 归纳产业逻辑、景气度、核心公司、风险点。
 
@@ -208,7 +215,7 @@ skills/go-stock/references/tool-catalog.md
 
 ## 安全边界
 
-不要调用或建议开放这些有副作用的工具：`SetTradingPrice`, `SendDingDingMessage`, `SendToDingDing`, `CreateAiRecommendStocks`, `BatchCreateAiRecommendStocks`, `AiRecommendStocks`。
+不要调用或建议开放这些有副作用或已禁用的工具：`SetTradingPrice`, `SendDingDingMessage`, `SendToDingDing`, `CreateAiRecommendStocks`, `BatchCreateAiRecommendStocks`, `AiRecommendStocks`, `GetAIAnalysisHistory`, `GetAIAnalysisDetail`, `GetAIAnalysisContent`。
 
 `portfolio position set` 是唯一受控写入例外；必须遵守“预览 -> 用户二次确认 -> 带确认令牌写入”的流程。
 

@@ -11,13 +11,25 @@ $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $releaseDir = Join-Path $repoRoot ("build\releases\v{0}-{1}" -f $version, $stamp)
 
 Push-Location $repoRoot
+$oldGoCache = $env:GOCACHE
+$oldGoTelemetry = $env:GOTELEMETRY
 try {
+    $repoGoCache = Join-Path $repoRoot ".gocache"
+    New-Item -ItemType Directory -Force -Path $repoGoCache | Out-Null
+    $env:GOCACHE = $repoGoCache
+    $env:GOTELEMETRY = "off"
+
+    go build -o (Join-Path $repoRoot "go-stock-cli.exe") .\cmd\go-stock-cli
     wails build --clean --platform windows/amd64
     New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
     Copy-Item (Join-Path $repoRoot "build\bin\go-stock.exe") (Join-Path $releaseDir "go-stock.exe") -Force
+    Copy-Item (Join-Path $repoRoot "go-stock-cli.exe") (Join-Path $releaseDir "go-stock-cli.exe") -Force
     Write-Host "Built release: $releaseDir\go-stock.exe"
+    Write-Host "Built release: $releaseDir\go-stock-cli.exe"
     Write-Host "Runtime data is stored outside build output under the go-stock user data directory."
 }
 finally {
+    $env:GOCACHE = $oldGoCache
+    $env:GOTELEMETRY = $oldGoTelemetry
     Pop-Location
 }

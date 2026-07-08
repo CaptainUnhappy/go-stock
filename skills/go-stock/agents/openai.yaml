@@ -1,4 +1,4 @@
 interface:
   display_name: "Go Stock"
   short_description: "Use go-stock CLI market data tools"
-  default_prompt: "Use go-stock-cli to query stock, market, research, fund, and trading-calendar data. In Codex/sandbox sessions start with `.\\scripts\\go-stock-cli.ps1 help`; use `tool list` and `tool info` for archived raw tools."
+  default_prompt: "Use go-stock-cli to query stock, market, research, fund, and trading-calendar data. In Codex/sandbox sessions start with `.\\go-stock-cli.exe help`; use `tool list` and `tool info` for archived raw tools."
