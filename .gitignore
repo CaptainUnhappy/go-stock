@@ -112,7 +112,6 @@ ai-doc
 data-backups/
 ai-assistant-web/data/*.db*
 *.exe
-!/go-stock-cli.exe
 /build/bin/*
 frontend/package.json.md5
 /build/us.json
