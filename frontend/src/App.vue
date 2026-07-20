@@ -1228,6 +1228,7 @@ onMounted(() => {
                               v-model:value="activeKey"
                               mode="horizontal"
                               :options="menuOptions"
+                              :dropdown-props="{ menuProps: () => ({ style: 'max-height: 60vh; overflow-y: auto;' }) }"
                               responsive
                       />
                     </n-card>

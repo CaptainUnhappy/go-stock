@@ -12,6 +12,8 @@ export function AbortSummaryStockNews():Promise<void>;
 
 export function AddAllStockInfo(arg1:models.AllStockInfo):Promise<string>;
 
+export function AddConcept(arg1:data.Concept):Promise<string>;
+
 export function AddCronTask(arg1:data.FollowedStock):Promise<any>;
 
 export function AddGroup(arg1:data.Group):Promise<string>;
@@ -19,6 +21,8 @@ export function AddGroup(arg1:data.Group):Promise<string>;
 export function AddPrompt(arg1:models.Prompt):Promise<string>;
 
 export function AddPromptTemplate(arg1:models.PromptTemplate):Promise<string>;
+
+export function AddStockConcept(arg1:number,arg2:string):Promise<string>;
 
 export function AddStockGroup(arg1:number,arg2:string):Promise<string>;
 
@@ -130,11 +134,15 @@ export function GetAllSkills():Promise<Array<models.Skill>>;
 
 export function GetAllStockChangesWithPaging(arg1:number):Promise<data.StockChangesResponse>;
 
+export function GetAllStockConcepts():Promise<Array<data.ConceptStock>>;
+
 export function GetAllStockInfoById(arg1:number):Promise<models.AllStockInfo>;
 
 export function GetAllStockInfoList(arg1:data.AllStockInfoQuery):Promise<data.AllStockInfoPageData>;
 
 export function GetAllStocks(arg1:number,arg2:number,arg3:string,arg4:models.TechnicalIndicators):Promise<models.AllStocksResp>;
+
+export function GetAllTdxTransactionData(arg1:string):Promise<any>;
 
 export function GetBKFundFlowList(arg1:string,arg2:number):Promise<Array<models.BKFundFlowPoint>>;
 
@@ -157,6 +165,8 @@ export function GetConceptFundFlowListByDate(arg1:string,arg2:string):Promise<Ar
 export function GetConceptFundFlowTopList(arg1:number):Promise<Array<models.ConceptFundFlow>>;
 
 export function GetConceptFundFlowTopListByDate(arg1:string,arg2:number):Promise<Array<models.ConceptFundFlow>>;
+
+export function GetConceptList():Promise<Array<data.Concept>>;
 
 export function GetConfig():Promise<data.SettingConfig>;
 
@@ -193,6 +203,10 @@ export function GetFundTop10Holdings(arg1:string):Promise<Array<data.FundHolding
 export function GetGroupList():Promise<Array<data.Group>>;
 
 export function GetGroupStockList(arg1:number):Promise<Array<data.GroupStock>>;
+
+export function GetHistoryTdxMinuteTimeData(arg1:string,arg2:string):Promise<data.TdxMinuteTimeDataBundle>;
+
+export function GetHistoryTdxTransactionData(arg1:string,arg2:string):Promise<any>;
 
 export function GetHotStrategy():Promise<Record<string, any>>;
 
@@ -232,6 +246,8 @@ export function GetStockChanges(arg1:Array<number>,arg2:number,arg3:number):Prom
 
 export function GetStockCommonKLine(arg1:string,arg2:string,arg3:number):Promise<any>;
 
+export function GetStockConceptsByStockCode(arg1:string):Promise<Array<data.ConceptStock>>;
+
 export function GetStockEastMoneyKLine(arg1:string,arg2:string,arg3:string,arg4:number):Promise<any>;
 
 export function GetStockEastMoneyKLinePage(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string):Promise<any>;
@@ -260,7 +276,11 @@ export function GetTdxCompanyInfo(arg1:string):Promise<data.TdxCompanyInfoBundle
 
 export function GetTdxFinanceInfo(arg1:string):Promise<data.TdxFinanceInfo>;
 
+export function GetTdxMinuteTimeData(arg1:string):Promise<data.TdxMinuteTimeDataBundle>;
+
 export function GetTdxSymbolBelongBoard(arg1:string):Promise<any>;
+
+export function GetTdxTransactionData(arg1:string,arg2:number,arg3:number):Promise<any>;
 
 export function GetTdxXDXRInfo(arg1:string):Promise<any>;
 
@@ -330,7 +350,15 @@ export function QuitApp():Promise<void>;
 
 export function ReFleshTelegraphList(arg1:string):Promise<any>;
 
+export function RefreshAllTdxTransactionData(arg1:string):Promise<any>;
+
+export function RefreshHistoryTdxTransactionData(arg1:string,arg2:string):Promise<any>;
+
+export function RemoveConcept(arg1:number):Promise<string>;
+
 export function RemoveGroup(arg1:number):Promise<string>;
+
+export function RemoveStockConcept(arg1:string,arg2:string,arg3:number):Promise<string>;
 
 export function RemoveStockGroup(arg1:string,arg2:string,arg3:number):Promise<string>;
 
@@ -397,6 +425,8 @@ export function UnFollow(arg1:string):Promise<string>;
 export function UnFollowFund(arg1:string):Promise<string>;
 
 export function UpdateAiRecommendStocksAlert(arg1:number,arg2:boolean):Promise<string>;
+
+export function UpdateConcept(arg1:number,arg2:string):Promise<string>;
 
 export function UpdateConfig(arg1:data.SettingConfig):Promise<string>;
 

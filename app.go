@@ -2462,6 +2462,64 @@ func (a *App) RemoveGroup(groupId int) string {
 	}
 }
 
+func (a *App) AddConcept(concept data.Concept) string {
+	ok := data.NewStockConceptApi(db.Dao).AddConcept(concept)
+	if ok {
+		return "添加成功"
+	} else {
+		return "添加失败"
+	}
+}
+
+func (a *App) GetConceptList() []data.Concept {
+	return data.NewStockConceptApi(db.Dao).GetConceptList()
+}
+
+// UpdateConcept 修改概念名称
+func (a *App) UpdateConcept(id int, name string) string {
+	ok := data.NewStockConceptApi(db.Dao).UpdateConcept(id, name)
+	if ok {
+		return "修改成功"
+	}
+	return "修改失败"
+}
+
+func (a *App) RemoveConcept(conceptId int) string {
+	ok := data.NewStockConceptApi(db.Dao).RemoveConcept(conceptId)
+	if ok {
+		return "移除成功"
+	} else {
+		return "移除失败"
+	}
+}
+
+func (a *App) AddStockConcept(conceptId int, stockCode string) string {
+	ok := data.NewStockConceptApi(db.Dao).AddStockConcept(conceptId, stockCode)
+	if ok {
+		return "添加成功"
+	} else {
+		return "添加失败"
+	}
+}
+
+func (a *App) RemoveStockConcept(code, name string, conceptId int) string {
+	ok := data.NewStockConceptApi(db.Dao).RemoveStockConcept(code, name, conceptId)
+	if ok {
+		return "移除成功"
+	} else {
+		return "移除失败"
+	}
+}
+
+// GetAllStockConcepts 返回全部概念-股票归属记录（含概念信息），供前端「全部」标签页表格渲染概念列。
+func (a *App) GetAllStockConcepts() []data.ConceptStock {
+	return data.NewStockConceptApi(db.Dao).GetAllStockConcepts()
+}
+
+func (a *App) GetStockConceptsByStockCode(stockCode string) []data.ConceptStock {
+	return data.NewStockConceptApi(db.Dao).GetStockConceptsByStockCode(stockCode)
+}
+
 func (a *App) GetStockKLine(stockCode, stockName string, days int64) *[]data.KLineData {
 	// 港股优先使用 gotdx (通达信 ExKLine2) 获取日K线，失败再降级到腾讯接口
 	if data.IsHKStockCode(stockCode) {
@@ -2481,6 +2539,52 @@ func (a *App) GetStockMinutePriceLineData(stockCode, stockName string) map[strin
 	res["stockName"] = stockName
 	res["stockCode"] = stockCode
 	return res
+}
+
+// GetTdxMinuteTimeData 通过 gotdx 获取当日分时图数据（A股走标准协议，港美股走 MAC MACTickCharts）。
+// 返回分时点列表（时间/价格/均价/成交量）+ 当日行情概览（昨收/今开/最高/最低/收盘/总量/总额）。
+func (a *App) GetTdxMinuteTimeData(stockCode string) *data.TdxMinuteTimeDataBundle {
+	return data.NewTdxKLineApi().GetMinuteTimeDataAuto(stockCode)
+}
+
+// GetHistoryTdxMinuteTimeData 通过 gotdx 获取历史日期的分时图数据。
+// A 股走标准协议 StockHistoryTickChart（用 buildAShareMinuteTimeSlots 生成时间轴），
+// 港美股走扩展行情 ExTickChart（date>0 时返回历史分时，自带 Time 字段）。
+// tradeDate 格式 "YYYY-MM-DD"（如 "2026-07-17"）。
+func (a *App) GetHistoryTdxMinuteTimeData(stockCode, tradeDate string) *data.TdxMinuteTimeDataBundle {
+	return data.NewTdxKLineApi().GetHistoryMinuteTimeDataAuto(stockCode, tradeDate)
+}
+
+// GetTdxTransactionData 通过 gotdx 获取当日分笔成交明细（A股走标准协议，港美股走 MAC MACTransactions）。
+// start 为起始偏移，count 为请求条数（A股最大 500，港美股最大 1000）。
+func (a *App) GetTdxTransactionData(stockCode string, start uint32, count uint32) *[]data.TdxTransactionData {
+	return data.NewTdxKLineApi().GetTransactionDataAuto(stockCode, start, count)
+}
+
+// GetAllTdxTransactionData 通过 gotdx 循环分页拉取当日全量分笔成交明细。
+// A 股走 StockFullTransaction（内部循环 count=600），港美股走 MAC 循环 count=1000。
+// 返回顺序为「从早到晚」，安全上限 50000 笔。
+// 默认走数据库缓存（5 分钟 TTL），命中缓存直接返回不请求 gotdx。
+func (a *App) GetAllTdxTransactionData(stockCode string) *[]data.TdxTransactionData {
+	return data.NewTdxKLineApi().GetAllTransactionDataAuto(stockCode, false)
+}
+
+// RefreshAllTdxTransactionData 强制刷新：跳过缓存直接走 gotdx 拉取全量，并刷新缓存。
+// 供前端「刷新」按钮使用，确保拿到最新数据。
+func (a *App) RefreshAllTdxTransactionData(stockCode string) *[]data.TdxTransactionData {
+	return data.NewTdxKLineApi().GetAllTransactionDataAuto(stockCode, true)
+}
+
+// GetHistoryTdxTransactionData 通过 gotdx 获取历史日期的全量分笔成交明细（带买卖方向）。
+// A 股走 StockHistoryFullTransactionWithTrans，港美股走 ExHistoryTransaction。
+// tradeDate 格式 "YYYY-MM-DD"（如 "2026-07-17"）。默认走缓存，5 分钟 TTL。
+func (a *App) GetHistoryTdxTransactionData(stockCode, tradeDate string) *[]data.TdxTransactionData {
+	return data.NewTdxKLineApi().GetHistoryTransactionDataAuto(stockCode, tradeDate, false)
+}
+
+// RefreshHistoryTdxTransactionData 强制刷新历史分笔成交：跳过缓存直接走 gotdx 拉取，并刷新缓存。
+func (a *App) RefreshHistoryTdxTransactionData(stockCode, tradeDate string) *[]data.TdxTransactionData {
+	return data.NewTdxKLineApi().GetHistoryTransactionDataAuto(stockCode, tradeDate, true)
 }
 
 func (a *App) GetStockCommonKLine(stockCode, stockName string, days int64) *[]data.KLineData {
