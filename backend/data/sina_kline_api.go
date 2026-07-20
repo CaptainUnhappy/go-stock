@@ -575,7 +575,24 @@ func eastMoneyAdjustFromFlag(adjustFlag string) string {
 	}
 }
 
-// FetchKLineWithFallback 按降级链获取 K 线数据：MAC→东方财富→(港美股返回)→新浪→腾讯→通达信。
+// GlobalIndexLegacyCode returns the legacy Tencent symbol that the original GUI
+// k-line chart used for selected global indexes.
+func GlobalIndexLegacyCode(stockCode string) (string, bool) {
+	switch strings.ToUpper(strings.TrimSpace(stockCode)) {
+	case "100.HSI":
+		return "hkHSI", true
+	case "100.DJIA":
+		return "us.DJI", true
+	case "100.SPX":
+		return "us.INX", true
+	case "100.NDX":
+		return "us.IXIC", true
+	default:
+		return "", false
+	}
+}
+
+// FetchKLineWithFallback 按降级链获取 K 线数据：MAC→东方财富→(海外指数旧腾讯代码)→(港美股返回)→新浪→腾讯→通达信。
 // adjustFlag 可选，控制复权类型："qfq"前复权、"hfq"后复权、"none"/"0"不复权；
 // 未传时各数据源保持原有默认行为（A股 MAC/通达信默认前复权，港股默认不复权，EastMoney 走 API 默认）。
 // 注意：新浪/腾讯数据源硬编码前复权作为兜底，adjustFlag 对其无效；港美股 ExKLine2 协议不支持复权。
@@ -597,7 +614,15 @@ func FetchKLineWithFallback(stockCode, stockName, klt string, limit int, end str
 		return eastMoneyResult
 	}
 
-	// 港美股/中证指数/海外指数：MAC失败后仅走东方财富，新浪/腾讯/通达信不支持港美股/.CSI/100.XXX海外指数
+	if IsGlobalIndexCode(stockCode) {
+		legacyResult, tried := fetchFromGlobalIndexLegacy(stockCode, klt, limit)
+		if tried && legacyResult != nil && legacyResult.Data != nil && len(*legacyResult.Data) > 0 {
+			fillVolumeRatio(legacyResult.Data)
+			return legacyResult
+		}
+	}
+
+	// 港美股/中证指数/海外指数：MAC失败后仅走东方财富；部分 100.XXX 海外指数已在上方尝试 GUI 旧腾讯代码兜底。
 	if IsHKStockCode(stockCode) || IsUSStockCode(stockCode) || IsCSIIndexCode(stockCode) || IsGlobalIndexCode(stockCode) {
 		if macResult != nil {
 			macResult.Source = "tdx-mac-ex"
@@ -693,6 +718,25 @@ func fetchFromTencent(stockCode, klt string, limit int) *KLineSourceResult {
 	api := NewTencentKLineApi(GetSettingConfig())
 	data := api.GetKLineData(stockCode, klt, limit)
 	return &KLineSourceResult{Data: data}
+}
+
+func fetchFromGlobalIndexLegacy(stockCode, klt string, limit int) (*KLineSourceResult, bool) {
+	legacyCode, ok := GlobalIndexLegacyCode(stockCode)
+	if !ok {
+		return nil, false
+	}
+	result := fetchFromTencent(legacyCode, klt, limit)
+	if result != nil && result.Data != nil && len(*result.Data) > 0 {
+		result.Source = "tencent-legacy"
+		return result, true
+	}
+	if NormalizeKLineType(klt) == "101" {
+		data := NewStockDataApi().GetHK_KLineData(legacyCode, "day", int64(limit))
+		if data != nil && len(*data) > 0 {
+			return &KLineSourceResult{Data: data, Source: "tencent-legacy"}, true
+		}
+	}
+	return &KLineSourceResult{Data: &[]KLineData{}, Source: "tencent-legacy"}, true
 }
 
 func fetchFromTdx(stockCode, klt string, limit int, adjustFlag string) *KLineSourceResult {

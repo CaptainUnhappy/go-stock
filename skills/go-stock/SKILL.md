@@ -72,7 +72,7 @@ skills/go-stock/references/tool-catalog.md
 - GUI 主树没有覆盖但归档工具层有的能力，用 `tool list` -> `tool info` -> `tool 工具名`。盯盘优先用 `tool GetStockInfo`，它包含五档盘口概览；`GetStockOrderBook` 只作为专用盘口补充工具。
 - 股票参数默认使用 CLI 风格 `--stock-code`。多股票可写成 `--stock-code "sz002335,sz002506"`，也可用管道：`Get-Content .\watchlist.txt | .\go-stock-cli.exe tool GetStockInfo --stock-code -`。当接上一条 go-stock 输出时，也可以用 `--stdin` 自动提取代码。
 - 股票名称、简称、拼音或代码不确定时，用 `portfolio search` 或 `kline search` 确认。
-- 市场复盘优先：`market news` -> `market major-index` -> `market money-flow stock` -> `research uplimit`。`market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。
+- 市场复盘优先：`market news` -> `market major-index` -> `market money-flow stock` -> `research uplimit`。`market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。恒生、道琼斯、标普500、纳斯达克会在东财 `100.*` 无数据时自动使用 GUI 旧图表同源的腾讯代码兜底；`高端装备` 使用 `930599.CSI`；`VIX恐慌指数` 沿用 GUI 现状，使用 `usUVXY.AM` 作为 UVXY 代理。
 - 个股分析优先：`portfolio view detail` -> `portfolio view daily-k`/`kline show` -> `portfolio view money` -> `portfolio view notice`/`portfolio view report`。
 - 资金流按 GUI 对齐：个股资金 9 标签用 `market money-flow stock` 的 `sort` 参数；板块资金用 `market money-flow bk ...`；概念资金用 `market money-flow concept ...`。
 - 基金使用 `fund follow` 和 `fund ranking`；基金搜索、详情、K线、净值、持仓分别用 `fund search/info/kline/nav/holdings`。

@@ -107,3 +107,24 @@ func TestFetchKLineWithFallback(t *testing.T) {
 		t.Error("Fallback 未识别数据源")
 	}
 }
+
+func TestGlobalIndexLegacyCode(t *testing.T) {
+	cases := map[string]string{
+		"100.HSI":  "hkHSI",
+		"100.DJIA": "us.DJI",
+		"100.SPX":  "us.INX",
+		"100.NDX":  "us.IXIC",
+	}
+	for input, want := range cases {
+		got, ok := GlobalIndexLegacyCode(input)
+		if !ok {
+			t.Fatalf("%s should have legacy code", input)
+		}
+		if got != want {
+			t.Fatalf("GlobalIndexLegacyCode(%q) = %q, want %q", input, got, want)
+		}
+	}
+	if got, ok := GlobalIndexLegacyCode("000001.SH"); ok || got != "" {
+		t.Fatalf("A-share index should not have legacy code, got %q", got)
+	}
+}

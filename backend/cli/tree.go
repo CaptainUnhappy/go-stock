@@ -264,14 +264,10 @@ func rawToolTree() TreeNode {
 }
 
 func majorIndexNodes() []TreeNode {
-	names := []string{
-		"上证指数", "深证指数", "创业板指", "恒生指数", "道琼斯", "标普500", "纳斯达克",
-		"沪深300", "上证50", "中证A500", "中证1000", "科创50", "科创芯片", "证券龙头",
-		"高端装备", "中证银行", "上证医药", "中证白酒", "富时中国三倍做多", "VIX恐慌指数",
-	}
-	nodes := make([]TreeNode, 0, len(names))
-	for _, name := range names {
-		nodes = append(nodes, TreeNode{Label: name, Example: "market major-index --name " + name})
+	catalog := majorIndexCatalog()
+	nodes := make([]TreeNode, 0, len(catalog))
+	for _, spec := range catalog {
+		nodes = append(nodes, TreeNode{Label: spec.Name, Example: "market major-index --name " + spec.Name})
 	}
 	return nodes
 }

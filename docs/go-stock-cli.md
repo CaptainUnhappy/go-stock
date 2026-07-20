@@ -72,7 +72,7 @@ stdin 提取规则支持 `sz002335`、`sh603690`、`bj430047`、`002335.SZ` 和�
 .\go-stock-cli.exe calendar next-trading-day --date 2026-07-03
 ```
 
-`market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。
+`market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。恒生、道琼斯、标普500、纳斯达克会在东财 `100.*` 无数据时自动使用 GUI 旧图表同源的腾讯代码兜底；`高端装备` 使用 `930599.CSI`；`VIX恐慌指数` 沿用 GUI 现状，使用 `usUVXY.AM` 作为 UVXY 代理。
 
 `calendar` 是独立交易日历入口：`calendar now` 查当前时间，`calendar is-trading-day --date YYYY-MM-DD` 判断 A 股交易日，`calendar next-trading-day --date YYYY-MM-DD` 查下一交易日，`calendar holiday/year/batch` 查节假日。
 

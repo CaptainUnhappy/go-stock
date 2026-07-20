@@ -89,7 +89,7 @@ K线分析
 .\go-stock-cli.exe tool GetStockLatestFinance --stockCode='sz002335,sz002506,sh603690'
 ```
 
-`market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。K 线命令支持 `002335` 这类深市前导 0 代码，不需要强制改成 `sz002335`。
+`market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。恒生、道琼斯、标普500、纳斯达克会在东财 `100.*` 无数据时自动使用 GUI 旧图表同源的腾讯代码兜底；`高端装备` 使用 `930599.CSI`；`VIX恐慌指数` 沿用 GUI 现状，使用 `usUVXY.AM` 作为 UVXY 代理。K 线命令支持 `002335` 这类深市前导 0 代码，不需要强制改成 `sz002335`。
 `kline show` 和 `kline signals` 对齐 GUI K线复权选择：日K及更长周期默认 `--adjust qfq` 前复权，可传 `--adjust hfq` 后复权或 `--adjust none` 不复权；分钟线忽略复权。
 股票池来自文件、上一条 go-stock 输出或 Agent 生成列表时，用 `--stock-code -` 或 `--stdin` 从管道读取；CLI 会自动提取 `sz002335`、`002335.SZ` 和裸 6 位代码并去重保序。
 

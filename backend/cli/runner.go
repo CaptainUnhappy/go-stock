@@ -1025,15 +1025,25 @@ func runMajorIndex(ctx context.Context, args map[string]any) (string, error) {
 		}
 		return out + "\n\n## 重大指数单独查询\n\n传入 `name` 或 `code` 可查询指定指数 K 线。支持：\n\n" + strings.Join(names, "\n"), nil
 	}
-	if code == "" {
-		code = majorIndexCode(name)
+	spec, ok := majorIndexSpecByName(name)
+	if code != "" {
+		if byCode, found := majorIndexSpecByCode(code); found {
+			spec = byCode
+			ok = true
+		} else {
+			spec = majorIndexSpec{Name: code, Code: code}
+			ok = true
+		}
 	}
-	if code == "" {
+	if !ok || spec.Code == "" {
 		return "", fmt.Errorf("unknown major index %q; pass code explicitly", name)
+	}
+	if spec.LegacyCode != "" {
+		return runMajorIndexWithFallback(spec, optionalInt(args, "limit", 60)), nil
 	}
 	r := newToolRunner()
 	return r.call("GetEastMoneyKLineWithMA", withDefaults(nil, map[string]any{
-		"stockCode": code,
+		"stockCode": spec.Code,
 		"kLineType": "day",
 		"limit":     optionalInt(args, "limit", 60),
 	}))(ctx, args)
@@ -1128,51 +1138,136 @@ func runResearchUplimit(r *toolRunner) Handler {
 	}
 }
 
+type majorIndexSpec struct {
+	Name         string
+	Aliases      []string
+	Code         string
+	LegacyCode   string
+	UseLegacyCLI bool
+	Note         string
+}
+
+func majorIndexCatalog() []majorIndexSpec {
+	return []majorIndexSpec{
+		{Name: "上证指数", Code: "000001.SH"},
+		{Name: "深证指数", Aliases: []string{"深证成指"}, Code: "399001.SZ"},
+		{Name: "创业板指", Code: "399006.SZ"},
+		{Name: "恒生指数", Code: "100.HSI", LegacyCode: "hkHSI", UseLegacyCLI: true},
+		{Name: "道琼斯", Code: "100.DJIA", LegacyCode: "us.DJI", UseLegacyCLI: true},
+		{Name: "标普500", Aliases: []string{"标普 500"}, Code: "100.SPX", LegacyCode: "us.INX", UseLegacyCLI: true},
+		{Name: "纳斯达克", Code: "100.NDX", LegacyCode: "us.IXIC", UseLegacyCLI: true},
+		{Name: "沪深300", Code: "000300.SH"},
+		{Name: "上证50", Code: "000016.SH"},
+		{Name: "中证A500", Code: "000510.SH"},
+		{Name: "中证1000", Code: "000852.SH"},
+		{Name: "科创50", Code: "000688.SH"},
+		{Name: "科创芯片", Code: "000685.SH"},
+		{Name: "证券龙头", Code: "399437.SZ"},
+		{Name: "高端装备", Code: "930599.CSI"},
+		{Name: "中证银行", Code: "399986.SZ"},
+		{Name: "上证医药", Code: "000037.SH"},
+		{Name: "中证白酒", Code: "399997.SZ"},
+		{Name: "富时中国三倍做多", Code: "USYINN.AM", LegacyCode: "usYINN.AM", UseLegacyCLI: true},
+		{Name: "VIX恐慌指数", Code: "USUVXY.AM", LegacyCode: "usUVXY.AM", UseLegacyCLI: true, Note: "UVXY代理"},
+	}
+}
+
 func majorIndexCode(name string) string {
-	switch strings.TrimSpace(name) {
-	case "上证指数":
-		return "000001.SH"
-	case "深证指数", "深证成指":
-		return "399001.SZ"
-	case "创业板指":
-		return "399006.SZ"
-	case "恒生指数":
-		return "100.HSI"
-	case "道琼斯":
-		return "100.DJIA"
-	case "标普500", "标普 500":
-		return "100.SPX"
-	case "纳斯达克":
-		return "100.NDX"
-	case "沪深300":
-		return "000300.SH"
-	case "上证50":
-		return "000016.SH"
-	case "中证A500":
-		return "000510.SH"
-	case "中证1000":
-		return "000852.SH"
-	case "科创50":
-		return "000688.SH"
-	case "科创芯片":
-		return "000685.SH"
-	case "证券龙头":
-		return "399437.SZ"
-	case "高端装备":
-		return "399437.SZ"
-	case "中证银行":
-		return "399986.SZ"
-	case "上证医药":
-		return "000037.SH"
-	case "中证白酒":
-		return "399997.SZ"
-	case "富时中国三倍做多":
-		return "USYINN.AM"
-	case "VIX恐慌指数":
-		return "USUVXY.AM"
-	default:
+	spec, ok := majorIndexSpecByName(name)
+	if !ok {
 		return ""
 	}
+	return spec.Code
+}
+
+func majorIndexSpecByName(name string) (majorIndexSpec, bool) {
+	normalized := strings.TrimSpace(name)
+	for _, spec := range majorIndexCatalog() {
+		if spec.Name == normalized {
+			return spec, true
+		}
+		for _, alias := range spec.Aliases {
+			if alias == normalized {
+				return spec, true
+			}
+		}
+	}
+	return majorIndexSpec{}, false
+}
+
+func majorIndexSpecByCode(code string) (majorIndexSpec, bool) {
+	normalized := strings.ToUpper(strings.TrimSpace(code))
+	for _, spec := range majorIndexCatalog() {
+		if strings.ToUpper(spec.Code) == normalized || strings.ToUpper(spec.LegacyCode) == normalized {
+			return spec, true
+		}
+	}
+	return majorIndexSpec{}, false
+}
+
+func runMajorIndexWithFallback(spec majorIndexSpec, limit int) string {
+	if limit <= 0 {
+		limit = 60
+	}
+	attempts := []string{}
+	if strings.TrimSpace(spec.Code) != "" {
+		result := data.FetchKLineWithFallback(spec.Code, spec.Name, "101", limit, "", "none")
+		attempts = append(attempts, majorIndexAttemptLabel(spec.Code, result))
+		if result != nil && result.Data != nil && len(*result.Data) > 0 {
+			return formatMajorIndexKLine(spec, spec.Code, result.Source, *result.Data)
+		}
+	}
+	if strings.TrimSpace(spec.LegacyCode) != "" {
+		list := data.NewStockDataApi().GetHK_KLineData(spec.LegacyCode, "day", int64(limit))
+		attempts = append(attempts, spec.LegacyCode+"（legacy 腾讯源）")
+		if list != nil && len(*list) > 0 {
+			return formatMajorIndexKLine(spec, spec.LegacyCode, "tencent-legacy", *list)
+		}
+	}
+	return fmt.Sprintf("%s：未获取到 K 线数据。已尝试：%s。若 GUI 同样为空，通常是东财/腾讯 HTTPS 行情源当前不可达或返回为空。", spec.Name, strings.Join(attempts, "；"))
+}
+
+func majorIndexAttemptLabel(code string, result *data.KLineSourceResult) string {
+	source := "统一回退链"
+	if result != nil && strings.TrimSpace(result.Source) != "" {
+		source += "/" + result.Source
+	}
+	return code + "（" + source + "）"
+}
+
+func formatMajorIndexKLine(spec majorIndexSpec, code string, source string, list []data.KLineData) string {
+	type row struct {
+		Date   string `md:"日期"`
+		Open   string `md:"开盘价"`
+		Close  string `md:"收盘价"`
+		High   string `md:"最高价"`
+		Low    string `md:"最低价"`
+		Volume string `md:"成交量"`
+	}
+	rows := make([]row, 0, len(list))
+	for _, item := range list {
+		rows = append(rows, row{
+			Date:   item.Day,
+			Open:   item.Open,
+			Close:  item.Close,
+			High:   item.High,
+			Low:    item.Low,
+			Volume: item.Volume,
+		})
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		source = "unknown"
+	}
+	title := fmt.Sprintf("%s %s K线（共 %d 条，数据源：%s）", spec.Name, code, len(rows), source)
+	if spec.Note != "" {
+		title += "（" + spec.Note + "）"
+	}
+	out := util.MarkdownTableWithTitle(title, rows)
+	if summary := buildKLineSummaryFromList(code, list, source, ""); summary != "" {
+		out += "\n\n" + summary
+	}
+	return out
 }
 
 func runConceptList(context.Context, map[string]any) (string, error) {
@@ -1316,11 +1411,25 @@ func buildKLineSummary(code, kLineType, maPeriods string, limit int, adjustFlag 
 	if result.Data == nil || len(*result.Data) == 0 {
 		return "", false
 	}
-	list := *result.Data
+	summary := buildKLineSummaryText(code, *result.Data, periods, result.Source, adjustFlag)
+	if summary == "" {
+		return "", false
+	}
+	return summary, true
+}
+
+func buildKLineSummaryFromList(code string, list []data.KLineData, source string, adjustFlag string) string {
+	return buildKLineSummaryText(code, list, []int{5, 10, 20, 60}, source, adjustFlag)
+}
+
+func buildKLineSummaryText(code string, list []data.KLineData, periods []int, source string, adjustFlag string) string {
+	if len(list) == 0 {
+		return ""
+	}
 	latest := list[len(list)-1]
 	current, ok := parseKLineFloat(latest.Close)
 	if !ok || current <= 0 {
-		return "", false
+		return ""
 	}
 	var b strings.Builder
 	b.WriteString("## K线摘要\n\n")
@@ -1341,13 +1450,13 @@ func buildKLineSummary(code, kLineType, maPeriods string, limit int, adjustFlag 
 	if text, ok := kLineVolumeSummary(list); ok {
 		b.WriteString("- 量能：" + text + "\n")
 	}
-	if strings.TrimSpace(result.Source) != "" {
-		b.WriteString("- 摘要数据源：" + result.Source + "\n")
+	if strings.TrimSpace(source) != "" {
+		b.WriteString("- 摘要数据源：" + source + "\n")
 	}
 	if adjustFlag != "" {
 		b.WriteString("- 复权：" + kLineAdjustLabel(adjustFlag) + "\n")
 	}
-	return strings.TrimSpace(b.String()), true
+	return strings.TrimSpace(b.String())
 }
 
 func kLineAdjustFlag(args map[string]any, kLineType string) (string, error) {

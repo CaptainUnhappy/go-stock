@@ -562,7 +562,7 @@ function ReFlesh(source) {
             <StockLightweightKlineChart code="399437.SZ" :chart-height="panelHeight-130" stock-name="证券龙头" :dark-theme="true"></StockLightweightKlineChart>
           </n-tab-pane>
           <n-tab-pane name="高端装备" tab="高端装备"  >
-            <StockLightweightKlineChart code="399437.SZ" :chart-height="panelHeight-130" stock-name="高端装备" :dark-theme="true"></StockLightweightKlineChart>
+            <StockLightweightKlineChart code="930599.CSI" :chart-height="panelHeight-130" stock-name="高端装备" :dark-theme="true"></StockLightweightKlineChart>
           </n-tab-pane>
           <n-tab-pane name="中证银行" tab="中证银行">
             <StockLightweightKlineChart code="399986.SZ" :chart-height="panelHeight-130" stock-name="中证银行" :dark-theme="true"></StockLightweightKlineChart>

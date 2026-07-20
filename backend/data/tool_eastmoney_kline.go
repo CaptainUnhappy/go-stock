@@ -200,6 +200,7 @@ func EastMoneyKLineWithMASection(api *EastMoneyKLineApi, stockCode, kLineType st
 		if fallbackResult.Data != nil && len(*fallbackResult.Data) > 0 {
 			list = fallbackResult.Data
 			sourceLabel = fallbackResult.Source
+			calculateSMA(list, maPeriods)
 		}
 	}
 	if list == nil || len(*list) == 0 {

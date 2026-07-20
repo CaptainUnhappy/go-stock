@@ -101,6 +101,41 @@ func TestCommandTreeDoesNotExpandMajorIndexItems(t *testing.T) {
 	}
 }
 
+func TestMajorIndexCatalogMappings(t *testing.T) {
+	for _, name := range []string{
+		"上证指数", "深证指数", "创业板指", "恒生指数", "道琼斯", "标普500", "纳斯达克",
+		"沪深300", "上证50", "中证A500", "中证1000", "科创50", "科创芯片", "证券龙头",
+		"高端装备", "中证银行", "上证医药", "中证白酒", "富时中国三倍做多", "VIX恐慌指数",
+	} {
+		if _, ok := majorIndexSpecByName(name); !ok {
+			t.Fatalf("major index %q missing from catalog", name)
+		}
+	}
+	for input, want := range map[string]string{
+		"恒生指数":  "hkHSI",
+		"道琼斯":   "us.DJI",
+		"标普500": "us.INX",
+		"纳斯达克":  "us.IXIC",
+	} {
+		spec, ok := majorIndexSpecByName(input)
+		if !ok {
+			t.Fatalf("%s missing from catalog", input)
+		}
+		if spec.LegacyCode != want || !spec.UseLegacyCLI {
+			t.Fatalf("%s legacy = %q useLegacy=%v, want %q true", input, spec.LegacyCode, spec.UseLegacyCLI, want)
+		}
+	}
+	if got := majorIndexCode("高端装备"); got != "930599.CSI" {
+		t.Fatalf("高端装备 code = %q, want 930599.CSI", got)
+	}
+	if majorIndexCode("高端装备") == majorIndexCode("证券龙头") {
+		t.Fatalf("高端装备 should not reuse 证券龙头 code %q", majorIndexCode("证券龙头"))
+	}
+	if spec, ok := majorIndexSpecByCode("us.IXIC"); !ok || spec.Name != "纳斯达克" {
+		t.Fatalf("legacy code us.IXIC should resolve to 纳斯达克, got %#v ok=%v", spec, ok)
+	}
+}
+
 func TestCommandTreeDoesNotExpandStockMoneyFlowItems(t *testing.T) {
 	help := RenderHelp()
 	if !strings.Contains(help, "├─ 个股资金流向  `market money-flow stock`") {
