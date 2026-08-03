@@ -10,6 +10,8 @@ import (
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
 	"io"
+	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -18,6 +20,8 @@ import (
 	"github.com/bytedance/sonic"
 	einomcp "github.com/cloudwego/eino-ext/components/tool/mcp"
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/middlewares/skill"
+	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	"github.com/cloudwego/eino/adk/prebuilt/deep"
 	"github.com/cloudwego/eino/adk/prebuilt/planexecute"
 	"github.com/cloudwego/eino/components/model"
@@ -258,10 +262,37 @@ func createPlanExecuteAgent(ctx context.Context, chatModel model.ToolCallingChat
 // 设计决策：
 //   - Instruction 留空使用内置默认 prompt（含 write_todos/task 使用指引），股票领域知识
 //     通过 messages[0] 系统消息注入，模型同时获得工具使用指引和领域专业知识。
-//   - 不启用 Backend/Shell/StreamingShell（桌面应用无需文件系统/Shell，且避免安全风险）。
+//   - 启用文件系统 Backend（ls/read_file/write_file/edit_file/glob/grep）与 StreamingShell
+//     （execute），工作目录限定为项目根，沙箱化路径校验避免越界访问。
+//   - 启用 skill 中间件（渐进式展示）：Agent 可发现并加载文件系统技能（skills/*/SKILL.md），
+//     按需激活而非始终注入，节省上下文 token。
 //   - 保留 write_todos（任务规划）和 general-purpose 子代理（上下文隔离委派）。
 //   - 自定义股票工具与内置工具自动合并，无需排除内置工具名。
 func createDeepAgent(ctx context.Context, chatModel model.ToolCallingChatModel, allTools []tool.BaseTool, aiConfig data.AIConfig) *AgentInstance {
+	// 文件系统沙箱根：默认当前工作目录（项目根），桌面应用启动时即为 go-stock 根目录
+	rootDir := deepAgentRootDir()
+	fsBackend := tools.NewLocalFilesystemBackend(rootDir)
+	streamingShell := tools.NewLocalStreamingShell(rootDir, 60*time.Second)
+
+	logger.SugaredLogger.Infof("DeepAgents 启用文件系统与 Shell: fs_root=%s, %s",
+		fsBackend.RootDir(), streamingShell.ShellInfo())
+
+	// 构建 skill 中间件：组合文件系统技能（SKILL.md）与数据库技能（models.Skill）
+	skillHandler := buildSkillMiddleware(ctx, fsBackend, rootDir)
+
+	var handlers []adk.TypedChatModelAgentMiddleware[*schema.Message]
+	if skillHandler != nil {
+		handlers = append(handlers, skillHandler)
+		logger.SugaredLogger.Infof("DeepAgents 启用 skill 中间件（渐进式展示）")
+	}
+
+	// summarization 中间件：对话 token 超阈值时自动摘要历史，避免上下文溢出
+	summarizationHandler := buildSummarizationMiddleware(ctx, chatModel, rootDir)
+	if summarizationHandler != nil {
+		handlers = append(handlers, summarizationHandler)
+		logger.SugaredLogger.Infof("DeepAgents 启用 summarization 中间件（自动摘要）")
+	}
+
 	deepAgent, err := deep.New(ctx, &deep.Config{
 		Name:        "StockDeepAgent",
 		Description: "具备任务规划、子Agent委派能力的股票投资分析深度Agent",
@@ -279,8 +310,11 @@ func createDeepAgent(ctx context.Context, chatModel model.ToolCallingChatModel, 
 				},
 			},
 		},
-		MaxIteration: 50,
-		// 不启用文件系统/Shell：桌面股票应用无需文件系统操作，且避免安全风险。
+		MaxIteration:   50,
+		Backend:        fsBackend,
+		StreamingShell: streamingShell,
+		Handlers:       handlers,
+		// 启用文件系统/Shell：DeepAgents 可读取项目源码、运行构建/测试命令以辅助复杂分析。
 		// 保留 write_todos（任务规划）和 general-purpose 子代理（上下文隔离委派）。
 	})
 	if err != nil {
@@ -292,6 +326,89 @@ func createDeepAgent(ctx context.Context, chatModel model.ToolCallingChatModel, 
 		Mode:     AgentModeDeepAgents,
 		AdkAgent: deepAgent,
 	}
+}
+
+// buildSkillMiddleware 构建 skill 中间件，基于文件系统技能。
+//
+// 文件系统技能：扫描 rootDir/skills/ 下的一级子目录中的 SKILL.md 文件，
+// 支持脚本（scripts/）、参考文档（references/）等资源，适合复杂多步技能。
+//
+// 若 skills 目录不存在或无技能，返回 nil（不注册中间件）。
+func buildSkillMiddleware(ctx context.Context, fsBackend *tools.LocalFilesystemBackend, rootDir string) adk.ChatModelAgentMiddleware {
+	skillsDir := filepath.Join(rootDir, "skills")
+
+	fileBackend, err := skill.NewBackendFromFilesystem(ctx, &skill.BackendFromFilesystemConfig{
+		Backend: fsBackend,
+		BaseDir: skillsDir,
+	})
+	if err != nil {
+		logger.SugaredLogger.Warnf("创建文件系统 skill 后端失败（skills 目录可能不存在）: %v", err)
+		return nil
+	}
+
+	// 检查是否有可用技能
+	matters, err := fileBackend.List(ctx)
+	if err != nil {
+		logger.SugaredLogger.Warnf("列出技能失败: %v", err)
+		return nil
+	}
+	logger.SugaredLogger.Infof("skill 中间件: 发现 %d 个文件系统技能", len(matters))
+
+	handler, err := skill.NewMiddleware(ctx, &skill.Config{
+		Backend: fileBackend,
+	})
+	if err != nil {
+		logger.SugaredLogger.Warnf("创建 skill 中间件失败: %v", err)
+		return nil
+	}
+	return handler
+}
+
+// buildSummarizationMiddleware 构建摘要中间件。
+//
+// 当对话历史 token 数超过阈值时，自动调用模型生成摘要，用摘要替换旧消息，
+// 避免 DeepAgent 多轮迭代后上下文窗口溢出。
+//
+// 触发条件（任一满足即触发）：
+//   - ContextTokens > 120000（token 阈值，适配常见 128k 上下文模型，留 8k 余量）
+//   - ContextMessages > 80（消息数兜底，防超长工具调用未达 token 阈值但消息过多）
+//
+// 摘要生成复用主 chatModel；原始对话转存到 logs/agent_transcript.md 供回溯。
+func buildSummarizationMiddleware(ctx context.Context, chatModel model.BaseModel[*schema.Message], rootDir string) adk.ChatModelAgentMiddleware {
+	// 确保日志目录存在，供 TranscriptFilePath 使用
+	logDir := filepath.Join(rootDir, "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		logger.SugaredLogger.Warnf("summarization: 创建日志目录失败: %v", err)
+	}
+
+	transcriptPath := filepath.Join(logDir, "agent_transcript.md")
+
+	handler, err := summarization.New(ctx, &summarization.Config{
+		Model: chatModel,
+		Trigger: &summarization.TriggerCondition{
+			ContextTokens:   120000,
+			ContextMessages: 80,
+		},
+		TranscriptFilePath: transcriptPath,
+	})
+	if err != nil {
+		logger.SugaredLogger.Warnf("创建 summarization 中间件失败: %v", err)
+		return nil
+	}
+	return handler
+}
+
+// deepAgentRootDir 返回 DeepAgents 文件系统沙箱的根目录。
+//
+// 默认使用进程当前工作目录（go-stock 桌面应用启动时即为项目根），
+// 便于模型读取后端代码、前端源码、配置文件等以辅助复杂分析。
+// 未来可通过配置文件覆盖此值。
+func deepAgentRootDir() string {
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
+		return "."
+	}
+	return wd
 }
 
 func errorRecoveryMiddleware() compose.ToolMiddleware {
@@ -518,7 +635,10 @@ func getMCPTools() []tool.BaseTool {
 			continue
 		}
 
-		mcpToolList, err := einomcp.GetTools(ctx, &einomcp.Config{Cli: cli})
+		mcpToolList, err := einomcp.GetTools(ctx, &einomcp.Config{
+			Cli:           cli,
+			CustomHeaders: data.ParseHeaders(server.Headers),
+		})
 		if err != nil {
 			logger.SugaredLogger.Errorf("获取MCP工具列表失败 [%s]: %v", server.Name, err)
 			continue

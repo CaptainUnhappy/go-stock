@@ -194,6 +194,11 @@ func UpdateConfig(s *SettingConfig) string {
 }
 
 func updateAiConfigs(aiConfigs []*AIConfig) error {
+	// nil 表示调用方不希望更新 AI 配置（保留现有配置）；
+	// 空 slice（len==0）才表示清空所有 AI 配置
+	if aiConfigs == nil {
+		return nil
+	}
 	if len(aiConfigs) == 0 {
 		err := db.Dao.Exec("DELETE FROM ai_config").Error
 		if err != nil {
@@ -264,24 +269,41 @@ func updateAiConfigs(aiConfigs []*AIConfig) error {
 	return err
 }
 
+// UpdateAiConfigsOnly 仅更新 AI 模型服务配置，不影响其他设置项
+// 供独立的 AI 模型服务管理页面调用，避免覆盖 settings 表中的其他字段
+func UpdateAiConfigsOnly(aiConfigs []*AIConfig) string {
+	if err := updateAiConfigs(aiConfigs); err != nil {
+		logger.SugaredLogger.Errorf("更新AI配置失败: %v", err)
+		return "保存失败: " + err.Error()
+	}
+	// 刷新内存中的配置缓存
+	ConfigureFromSettings(GetSettingConfig())
+	return "保存成功！"
+}
+
 func GetSettingConfig() *SettingConfig {
 	settingConfig := &SettingConfig{}
 	settings := &Settings{}
 	aiConfigs := make([]*AIConfig, 0)
 	// 处理数据库查询可能返回的空结果
-	result := db.Dao.Model(&Settings{}).First(settings)
+	settingsResult := db.Dao.Model(&Settings{}).First(settings)
+	// 新用户无设置记录时，默认启用暗黑主题
+	if errors.Is(settingsResult.Error, gorm.ErrRecordNotFound) {
+		settings.DarkTheme = true
+	}
+	// AI 配置始终查询，不依赖 OpenAiEnable 开关：
+	// AI 配置管理页面、飞书机器人、AI 助手等独立功能可能在 OpenAiEnable=false 时也需要读取已保存的配置
+	result := db.Dao.Model(&AIConfig{}).Find(&aiConfigs)
+	if result.Error != nil {
+		logger.SugaredLogger.Error("查询AI配置失败:", result.Error)
+	} else if len(aiConfigs) > 0 {
+		lo.ForEach(aiConfigs, func(item *AIConfig, index int) {
+			if item.TimeOut <= 0 {
+				item.TimeOut = 60 * 5
+			}
+		})
+	}
 	if settings.OpenAiEnable {
-		// 处理AI配置查询可能出现的错误
-		result = db.Dao.Model(&AIConfig{}).Find(&aiConfigs)
-		if result.Error != nil {
-			logger.SugaredLogger.Error("查询AI配置失败:", result.Error)
-		} else if len(aiConfigs) > 0 {
-			lo.ForEach(aiConfigs, func(item *AIConfig, index int) {
-				if item.TimeOut <= 0 {
-					item.TimeOut = 60 * 5
-				}
-			})
-		}
 		if settings.CrawlTimeOut <= 0 {
 			settings.CrawlTimeOut = 60
 		}

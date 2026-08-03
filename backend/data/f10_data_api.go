@@ -683,6 +683,199 @@ func (receiver StockDataApi) GetStockLatestFinanceToMarkdown(stockCode string) s
 	return f10GenericToMarkdownOrdered(name+" 最新财务主要数据", resp, f10LatestFinanceColOrder)
 }
 
+// HKF10MainIndicatorResp 东方财富港股F10主要指标接口响应。
+// 数据结构为二维数组（rows × cols），每行第一项为日期/分组名，其余为指标值。
+// 接口示例：http://emweb.securities.eastmoney.com/PC_HKF10/NewFinancialAnalysis/GetZYZB?code=00700
+// 返回 data 含两个键：zyzb_an（年度，仅年报）和 zyzb_abgq（报告期，全部季度）。
+// 每个二维数组首行为列头（含 "每股指标"/"成长能力指标"/"盈利能力指标"/"盈利质量指标"/"财务风险指标" 等分组列），
+// 数据行的对应列重复出现同一日期，渲染时需折叠为单一日期列。
+type HKF10MainIndicatorResp struct {
+	Status int               `json:"status"`
+	Msg    string            `json:"msg"`
+	Data   *HKF10MainIndData `json:"data"`
+}
+
+type HKF10MainIndData struct {
+	Abgq [][]string `json:"zyzb_abgq"` // 报告期（全部季度，最新在前）
+	An   [][]string `json:"zyzb_an"`   // 年度（仅年报，最新在前）
+}
+
+// normalizeHKF10Code 港股代码归一化为 EastMoney HKF10 接口所需的纯数字 code（如 00700）。
+// 支持 00700.HK / hk00700 / HK00700 / 00700 等格式。
+func normalizeHKF10Code(stockCode string) string {
+	code := strings.TrimSpace(stockCode)
+	upper := strings.ToUpper(code)
+	// 去 .HK 后缀（不区分大小写）
+	if strings.HasSuffix(upper, ".HK") {
+		code = code[:len(code)-3]
+		upper = strings.ToUpper(code)
+	}
+	// 去 HK 前缀（不区分大小写）
+	if strings.HasPrefix(upper, "HK") {
+		code = code[2:]
+	}
+	// 仅保留数字，再左侧补零到 5 位
+	code = RemoveAllNonDigitChar(code)
+	if len(code) < 5 {
+		code = strings.Repeat("0", 5-len(code)) + code
+	}
+	return code
+}
+
+// GetHKStockLatestFinance 获取港股最新财务主要指标（东方财富 HKF10 接口）。
+// 返回报告期数据（zyzb_abgq），最新季度排在最前；若需要年度数据请使用 GetHKStockAnnualFinance。
+// 仅适用于港股（.HK 后缀，如 00700.HK 腾讯控股）。A股请使用 GetStockLatestFinance。
+func (receiver StockDataApi) GetHKStockLatestFinance(stockCode string) (*HKF10MainIndicatorResp, error) {
+	code := normalizeHKF10Code(stockCode)
+	url := "http://emweb.securities.eastmoney.com/PC_HKF10/NewFinancialAnalysis/GetZYZB?code=" + code
+	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+		SetHeader("Referer", "https://emweb.securities.eastmoney.com/").
+		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0").
+		Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %v", err)
+	}
+	if resp.StatusCode() != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode())
+	}
+	var data HKF10MainIndicatorResp
+	if err := json.Unmarshal(resp.Body(), &data); err != nil {
+		return nil, fmt.Errorf("parse failed: %v", err)
+	}
+	if data.Status != 1 {
+		return &data, fmt.Errorf("获取港股财务数据失败: %s", data.Msg)
+	}
+	return &data, nil
+}
+
+// GetHKStockLatestFinanceToMarkdown 港股最新财务主要指标渲染为 Markdown 表格。
+// 输出最新一期与去年同期两列，便于直观对比同比变化。
+func (receiver StockDataApi) GetHKStockLatestFinanceToMarkdown(stockCode string) string {
+	code := normalizeHKF10Code(stockCode)
+	resp, err := receiver.GetHKStockLatestFinance(stockCode)
+	if err != nil {
+		logger.SugaredLogger.Errorf("获取港股最新财务数据失败(code=%s): %v", code, err)
+		return fmt.Sprintf("获取港股最新财务数据失败: %v", err)
+	}
+	return hkF10MainIndicatorToMarkdown(stockCode+" 港股最新财务主要指标", resp, true)
+}
+
+// GetHKStockAnnualFinanceToMarkdown 港股年度财务主要指标渲染为 Markdown 表格。
+// 输出最近 5 个年度数据，便于查看长期趋势。
+func (receiver StockDataApi) GetHKStockAnnualFinanceToMarkdown(stockCode string) string {
+	code := normalizeHKF10Code(stockCode)
+	resp, err := receiver.GetHKStockLatestFinance(stockCode)
+	if err != nil {
+		logger.SugaredLogger.Errorf("获取港股年度财务数据失败(code=%s): %v", code, err)
+		return fmt.Sprintf("获取港股年度财务数据失败: %v", err)
+	}
+	return hkF10MainIndicatorToMarkdown(stockCode+" 港股年度财务主要指标", resp, false)
+}
+
+// hkF10IndicatorRow HK F10 指标表的一行（指标名 + 各期数值）。
+type hkF10IndicatorRow struct {
+	Name string
+	Vals []string
+}
+
+// hkF10MainIndicatorToMarkdown 将 HK F10 主要指标二维数组渲染为 Markdown 表格。
+// useLatest=true 时使用 zyzb_abgq 最新 2 期（最新 + 去年同期），便于同比对比；
+// useLatest=false 时使用 zyzb_an 最近 5 个年度，便于长期趋势分析。
+//
+// 数据结构说明：HK F10 接口返回的二维数组首行为列头，含 5 个分组标记列：
+//
+//	位置 0  "每股指标"      -> 后续 6 列：基本/稀释/TTM EPS、每股净资产/经营现金流/营业收入
+//	位置 7  "成长能力指标"   -> 后续 8 列：营收/毛利/归母净利、3 项同比、3 项滚动环比
+//	位置 17 "盈利能力指标"   -> 后续 6 列：平均/年化 ROE、总资产净利率、毛利率、净利率、投资回报率
+//	位置 24 "盈利质量指标"   -> 后续 2 列：所得税/利润总额、经营现金流/营业收入
+//	位置 27 "财务风险指标"   -> 后续 3 列：资产负债率、流动负债/总负债、流动比率
+//
+// 数据行中这 5 个位置均为同一日期（如 "25-12-31"），渲染时折叠为单一日期列。
+func hkF10MainIndicatorToMarkdown(title string, resp *HKF10MainIndicatorResp, useLatest bool) string {
+	if resp == nil || resp.Data == nil {
+		return fmt.Sprintf("## %s\n\n暂无数据", title)
+	}
+	var rows [][]string
+	if useLatest {
+		rows = resp.Data.Abgq
+	} else {
+		rows = resp.Data.An
+	}
+	if len(rows) < 2 {
+		return fmt.Sprintf("## %s\n\n暂无数据", title)
+	}
+
+	// 选择要展示的列：最新一期；如为报告期模式则再选去年同期对比
+	headerRow := rows[0]
+	dataRows := rows[1:]
+	// 数据按日期降序排列（最新在前），选取最新 N 期
+	maxCols := 5
+	if useLatest {
+		maxCols = 2
+	}
+	if len(dataRows) > maxCols {
+		dataRows = dataRows[:maxCols]
+	}
+
+	// 5 个分组标记列的索引
+	groupMarkIdx := map[int]bool{0: true, 7: true, 17: true, 24: true, 27: true}
+	// 构建指标行：跳过分组标记列，将其作为分组标题行插入
+	var indicatorRows []hkF10IndicatorRow
+	currentGroup := ""
+	for colIdx := 0; colIdx < len(headerRow); colIdx++ {
+		hdr := headerRow[colIdx]
+		if groupMarkIdx[colIdx] {
+			currentGroup = hdr
+			// 第一列 "每股指标" 分组名特殊处理：保持为 "基本指标"
+			if currentGroup == "每股指标" {
+				currentGroup = "基本指标"
+			}
+			continue
+		}
+		row := hkF10IndicatorRow{
+			Name: fmt.Sprintf("%s · %s", currentGroup, hdr),
+		}
+		for _, dr := range dataRows {
+			if colIdx < len(dr) {
+				row.Vals = append(row.Vals, dr[colIdx])
+			} else {
+				row.Vals = append(row.Vals, "--")
+			}
+		}
+		indicatorRows = append(indicatorRows, row)
+	}
+
+	// 收集日期作为表头（取自每行的第 0 列，即 "每股指标" 分组下对应的日期）
+	var dateHeaders []string
+	for _, dr := range dataRows {
+		if len(dr) > 0 {
+			dateHeaders = append(dateHeaders, dr[0])
+		} else {
+			dateHeaders = append(dateHeaders, "--")
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("## %s\n\n", title))
+	sb.WriteString("| 指标 |")
+	for _, d := range dateHeaders {
+		sb.WriteString(" " + d + " |")
+	}
+	sb.WriteString("\n| --- |")
+	for range dateHeaders {
+		sb.WriteString(" --- |")
+	}
+	sb.WriteString("\n")
+	for _, r := range indicatorRows {
+		sb.WriteString(fmt.Sprintf("| %s |", r.Name))
+		for _, v := range r.Vals {
+			sb.WriteString(" " + v + " |")
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
 func (receiver StockDataApi) GetStockQtrMainFinanceToMarkdown(stockCode string) string {
 	resp, err := receiver.GetStockQtrMainFinance(stockCode)
 	if err != nil {

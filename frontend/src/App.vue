@@ -14,7 +14,7 @@ import {createDiscreteApi,darkTheme,lightTheme , NIcon, NText,NButton,dateZhCN,z
 import {
   AlarmOutline,
   AnalyticsOutline,
-  BarChartSharp, Bonfire, BonfireOutline, DiamondOutline, EaselSharp,
+  BarChartSharp, Bonfire, BonfireOutline, CalendarOutline, DiamondOutline, EaselSharp,
   ExpandOutline, Flag,
   Flame, FlameSharp, FlaskOutline, GlobeOutline, InformationOutline,
   LogoGithub,
@@ -48,7 +48,7 @@ const enableNews = ref(false)
 const contentStyle = ref("")
 const enableFund = ref(false)
 const enableAgent = ref(false)
-const enableDarkTheme = ref(null)
+const enableDarkTheme = ref(darkTheme)
 const content = ref('未经授权,禁止商业目的!\n\n数据来源于网络,仅供参考;投资有风险,入市需谨慎')
 const isFullscreen = ref(false)
 const activeKey = ref('stock')
@@ -843,6 +843,29 @@ const menuOptions = ref([
                   {
                     to: {
                       name: 'research',
+                      query: {
+                        name:"每日操作计划",
+                      },
+                    },
+                    onClick: () => {
+                      activeKey.value = 'research'
+                      setTimeout(() => {
+                        EventsEmit("changeResearchTab", {ID: 7, name: '每日操作计划'})
+                      }, 100)
+                    },
+                  },
+                  {default: () => '每日操作计划'}
+              ),
+          key: 'dailyOperationPlan',
+          icon: renderIcon(CalendarOutline),
+        },
+        {
+          label: () =>
+              h(
+                  RouterLink,
+                  {
+                    to: {
+                      name: 'research',
                     },
                     onClick: () => {
                       activeKey.value = 'research'
@@ -875,29 +898,55 @@ const menuOptions = ref([
               ),
           key: 'skills',
           icon: renderIcon(FlashOutline),
-          show: false,
         },
       ],
     },
   {
-    label: () =>
-        h(
-            RouterLink,
-            {
-              to: {
-                name: 'settings',
-                query: {
-                  name:"设置",
-                },
-                onClick: () => {
-                  activeKey.value = 'settings'
-                },
-              }
-            },
-            {default: () => '设置'}
-        ),
+    label: '设置',
     key: 'settings',
     icon: renderIcon(SettingsOutline),
+    children: [
+      {
+        label: () =>
+            h(
+                RouterLink,
+                {
+                  to: {
+                    name: 'settings',
+                    query: {
+                      name:"设置",
+                    },
+                  },
+                  onClick: () => {
+                    activeKey.value = 'settings'
+                  },
+                },
+                {default: () => '基础设置'}
+            ),
+        key: 'settings',
+        icon: renderIcon(SettingsOutline),
+      },
+      {
+        label: () =>
+            h(
+                RouterLink,
+                {
+                  to: {
+                    name: 'aiConfigs',
+                    query: {
+                      name:"AI模型服务",
+                    },
+                  },
+                  onClick: () => {
+                    activeKey.value = 'aiConfigs'
+                  },
+                },
+                {default: () => 'AI模型服务'}
+            ),
+        key: 'aiConfigs',
+        icon: renderIcon(SparklesOutline),
+      },
+    ],
   },
   {
     label: () =>

@@ -25,6 +25,7 @@ var toolGroupMap = map[string]ToolGroup{
 	"GetCurrentTime":               GroupBase,
 	"GetGlobalMarketStatus":        GroupMarket,
 	"GetFollowedStocks":            GroupBase,
+	"CleanupStockCodes":            GroupBase,
 	"GetHolidayInfo":               GroupBase,
 	"GetHolidayYear":               GroupBase,
 	"GetHolidayBatch":              GroupBase,
@@ -80,6 +81,7 @@ var toolGroupMap = map[string]ToolGroup{
 	"FinancialQA": GroupAIAnalysis,
 
 	"GetStockLatestFinance":       GroupStockAnalysis,
+	"GetHKStockLatestFinance":     GroupStockAnalysis,
 	"GetStockQtrMainFinance":      GroupStockAnalysis,
 	"GetStockOrgPredict":          GroupStockAnalysis,
 	"GetStockPredictSummary":      GroupStockAnalysis,
@@ -171,16 +173,22 @@ var toolGroupMap = map[string]ToolGroup{
 	"GetAIAnalysisDetail":  GroupAIAnalysis,
 	"GetAIAnalysisContent": GroupAIAnalysis,
 
-	"SetTradingPrice":          GroupOperations,
-	"SetFollowedStockPosition": GroupOperations,
-	"FollowStock":              GroupOperations,
-	"SendDingDingMessage":      GroupOperations,
-	"SendToDingDing":           GroupOperations,
-	"SendFeishuMessage":        GroupOperations,
-	"SendToFeishu":             GroupOperations,
-	"SearchFund":               GroupOperations,
-	"GetFundInfo":              GroupOperations,
-	"GetEconomicData":          GroupOperations,
+	"SetTradingPrice":                GroupOperations,
+	"SetFollowedStockPosition":       GroupOperations,
+	"FollowStock":                    GroupOperations,
+	"AddDailyOperationPlan":          GroupOperations,
+	"GetDailyOperationPlanList":      GroupOperations,
+	"UpdateDailyOperationPlan":       GroupOperations,
+	"UpdateDailyOperationPlanStatus": GroupOperations,
+	"SendDingDingMessage":            GroupOperations,
+	"SendToDingDing":                 GroupOperations,
+	"SendFeishuMessage":              GroupOperations,
+	"SendToFeishu":                   GroupOperations,
+	"SearchFund":                     GroupOperations,
+	"GetFundInfo":                    GroupOperations,
+	"GetEconomicData":                GroupOperations,
+	"GetTradingRecordList":           GroupOperations,
+	"GetTradingRecordStatistics":     GroupOperations,
 
 	// 分组与概念标签管理（16 个工具）
 	"GetStockGroups":          GroupOperations,
@@ -199,6 +207,11 @@ var toolGroupMap = map[string]ToolGroup{
 	"BatchAddStocksToConcept": GroupOperations,
 	"MergeStockConcepts":      GroupOperations,
 	"ReorganizeStockGroups":   GroupOperations,
+
+	"ListPromptTemplates":  GroupBase,
+	"GetPromptTemplate":    GroupBase,
+	"SavePromptTemplate":   GroupBase,
+	"DeletePromptTemplate": GroupBase,
 }
 
 type groupKeywords struct {
@@ -305,6 +318,8 @@ var groupKeywordsList = []groupKeywords{
 		"基金", "基金代码", "基金名称", "净值",
 		"GDP", "CPI", "PPI", "PMI", "宏观经济",
 		"关注", "自选", "加自选", "加入分组", "设置概念", "概念标签", "归类", "持仓", "持仓量",
+		"交易日志", "交易记录", "盈亏",
+		"操作计划", "每日计划", "操作方案", "明日操作", "明天操作", "盘中预警",
 	}},
 }
 

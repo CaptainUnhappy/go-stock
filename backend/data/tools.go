@@ -1199,6 +1199,25 @@ func Tools(tools []Tool) []Tool {
 	tools = append(tools, Tool{
 		Type: "function",
 		Function: ToolFunction{
+			Name: "CleanupStockCodes",
+			Description: "扫描 followed_stock 和 group_stock_info 表，把不规范的 stock_code（后缀格式 600938.SH、纯数字 600938、大写 SH600938 等）" +
+				"归一化为前缀小写格式（sh600938）。遇到同一只股票两种格式都存在的重复记录，会合并 cost_price/volume 后删除重复。" +
+				"建议先以 dryRun=true 预览，确认后再以 dryRun=false 执行实际清理。",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"dryRun": map[string]any{
+						"type":        "boolean",
+						"description": "是否仅预览不修改数据库。true=只扫描返回报告；false=执行实际清理（默认 false）",
+					},
+				},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
 			Name: "FollowStock",
 			Description: "关注（新增自选）一只股票，并可同时设置其附加信息：分组、概念标签、成本价、持仓量、止盈止损价位等。" +
 				"分组/概念不存在时自动创建，概念名称忽略大小写去重；美股代码 us 前缀会被自动归一化。" +
@@ -1248,6 +1267,259 @@ func Tools(tools []Tool) []Tool {
 	tools = append(tools, Tool{
 		Type: "function",
 		Function: ToolFunction{
+			Name: "AddDailyOperationPlan",
+			Description: "为指定股票创建一条「每日操作计划」，包含总体判断、多个情景方案（不同价格走势下的操作动作）、操作纪律、总结与风险提示，并可开启盘中价格预警。" +
+				"AI 在完成个股分析后，应主动调用此工具将操作建议结构化保存，方便用户在「每日操作计划」页面查看，并在盘中达到触发条件时自动推送通知。" +
+				"情景方案的 triggerPriceMin/Max（触发价区间）、stopLossPriceNum（止损价）、target1Min/Max、target2Min/Max 为量化字段，用于盘中预警监控，应尽量填写。" +
+				"actionType 取值：buy(买入)/wait(观望)/observe(观察)/stop_loss(止损离场)。",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"stockCode": map[string]any{
+						"type":        "string",
+						"description": "股票代码，如 603986、000001.SZ、sh600519、00700.HK、usaapl。",
+					},
+					"stockName": map[string]any{
+						"type":        "string",
+						"description": "股票名称，如 兆易创新。",
+					},
+					"planDate": map[string]any{
+						"type":        "string",
+						"description": "计划开始日期，格式 YYYY-MM-DD。不传则默认为今天。",
+					},
+					"planEndDate": map[string]any{
+						"type":        "string",
+						"description": "计划结束日期，格式 YYYY-MM-DD。可选，不传或为空表示仅当天有效。",
+					},
+					"overallJudgment": map[string]any{
+						"type":        "string",
+						"description": "对该股的总体判断，包括基本面+技术面分析结论、是否可以买、仓位与止损要求等。",
+					},
+					"summary": map[string]any{
+						"type":        "string",
+						"description": "一句话总结整体操作方案。",
+					},
+					"riskWarning": map[string]any{
+						"type":        "string",
+						"description": "风险提示。可选，不传则使用默认风险提示文案。",
+					},
+					"enableAlert": map[string]any{
+						"type":        "boolean",
+						"description": "是否开启盘中价格预警监控，默认 true。开启后盘中每分钟监控实时价，达到触发条件时推送通知。",
+					},
+					"notifyChannels": map[string]any{
+						"type":        "array",
+						"description": "通知渠道数组，可选值：app(软件内提醒)、feishu(飞书)、dingding(钉钉)。不传则默认全部渠道。",
+						"items": map[string]any{
+							"type":        "string",
+							"description": "通知渠道：app / feishu / dingding",
+						},
+					},
+					"scenarios": map[string]any{
+						"type":        "array",
+						"description": "情景方案数组，按不同价格走势给出对应的操作动作。至少一个。",
+						"items": map[string]any{
+							"type":        "object",
+							"description": "单个情景方案",
+							"properties": map[string]any{
+								"title":            map[string]any{"type": "string", "description": "情景标题，如：情景一：低开/平开在 460-475 区间（最理想）"},
+								"condition":        map[string]any{"type": "string", "description": "触发条件描述，如 低开/平开在 460-475 区间"},
+								"actionType":       map[string]any{"type": "string", "description": "动作类型：buy(买入)/wait(观望)/observe(观察)/stop_loss(止损离场)", "enum": []string{"buy", "wait", "observe", "stop_loss"}},
+								"action":           map[string]any{"type": "string", "description": "动作描述，如 分批买入"},
+								"position":         map[string]any{"type": "string", "description": "仓位，如 总仓位1/3"},
+								"buyPriceRange":    map[string]any{"type": "string", "description": "买入区间，如 460-470元"},
+								"stopLossPrice":    map[string]any{"type": "string", "description": "止损价（文本），如 400元"},
+								"target1":          map[string]any{"type": "string", "description": "第一目标，如 500-505元（减仓1/2）"},
+								"target2":          map[string]any{"type": "string", "description": "第二目标，如 550-560元（全部止盈）"},
+								"strategy":         map[string]any{"type": "string", "description": "策略说明/备注"},
+								"isBest":           map[string]any{"type": "boolean", "description": "是否最理想情景，默认 false"},
+								"triggerPriceMin":  map[string]any{"type": "number", "description": "情景触发价下限，实时价进入[下限,上限]区间时触发情景提醒。0或省略表示不监控"},
+								"triggerPriceMax":  map[string]any{"type": "number", "description": "情景触发价上限"},
+								"stopLossPriceNum": map[string]any{"type": "number", "description": "止损价（数值），实时价<=此值触发止损预警。0或省略表示不监控"},
+								"target1Min":       map[string]any{"type": "number", "description": "第一目标价下限，实时价>=此值触发目标1达成"},
+								"target1Max":       map[string]any{"type": "number", "description": "第一目标价上限"},
+								"target2Min":       map[string]any{"type": "number", "description": "第二目标价下限，实时价>=此值触发目标2达成"},
+								"target2Max":       map[string]any{"type": "number", "description": "第二目标价上限"},
+							},
+						},
+					},
+					"discipline": map[string]any{
+						"type":        "array",
+						"description": "操作纪律数组，如仓位控制、严格止损等原则。可选。",
+						"items": map[string]any{
+							"type":        "object",
+							"description": "单条操作纪律",
+							"properties": map[string]any{
+								"principle": map[string]any{"type": "string", "description": "原则，如 仓位控制"},
+								"detail":    map[string]any{"type": "string", "description": "说明，如 首次建仓不超过总计划资金的1/3，留足子弹补仓"},
+							},
+						},
+					},
+				},
+				Required: []string{"stockCode", "stockName", "scenarios"},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "GetDailyOperationPlanList",
+			Description: "查询每日操作计划列表，返回 Markdown 格式的计划详情（含情景方案、量化价位、操作纪律等），供 AI 分析。支持按股票代码/名称/日期/状态筛选。",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"stockCode": map[string]any{
+						"type":        "string",
+						"description": "可选，按股票代码模糊筛选，如 603986",
+					},
+					"stockName": map[string]any{
+						"type":        "string",
+						"description": "可选，按股票名称模糊筛选，如 兆易创新",
+					},
+					"planDate": map[string]any{
+						"type":        "string",
+						"description": "可选，按计划日期筛选，格式 YYYY-MM-DD，如 2026-07-23",
+					},
+					"status": map[string]any{
+						"type":        "string",
+						"description": "可选，按状态筛选：pending=待执行，executing=执行中，done=已完成，cancelled=已取消",
+					},
+					"page": map[string]any{
+						"type":        "number",
+						"description": "页码，默认 1",
+					},
+					"pageSize": map[string]any{
+						"type":        "number",
+						"description": "每页条数，默认 20，最大 100",
+					},
+				},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "UpdateDailyOperationPlan",
+			Description: "编辑修改已有操作计划（部分更新，仅更新传入的字段，未传入字段保持原值）。需要先通过 GetDailyOperationPlanList 获取计划 ID。",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"planId": map[string]any{
+						"type":        "number",
+						"description": "要编辑的操作计划 ID（必填）",
+					},
+					"stockCode": map[string]any{
+						"type":        "string",
+						"description": "股票代码（可选，不传保持原值）",
+					},
+					"stockName": map[string]any{
+						"type":        "string",
+						"description": "股票名称（可选，不传保持原值）",
+					},
+					"planDate": map[string]any{
+						"type":        "string",
+						"description": "计划开始日期 YYYY-MM-DD（可选，不传保持原值）",
+					},
+					"planEndDate": map[string]any{
+						"type":        "string",
+						"description": "计划结束日期 YYYY-MM-DD（可选，不传保持原值。为空表示仅当天有效）",
+					},
+					"overallJudgment": map[string]any{
+						"type":        "string",
+						"description": "总体判断（可选，传入则覆盖）",
+					},
+					"scenarios": map[string]any{
+						"type":        "array",
+						"description": "情景方案数组（可选，传入则整体覆盖）。结构与 AddDailyOperationPlan 的 scenarios 相同",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"title":            map[string]any{"type": "string", "description": "情景标题"},
+								"condition":        map[string]any{"type": "string", "description": "触发条件"},
+								"actionType":       map[string]any{"type": "string", "description": "操作类型:buy/sell/watch"},
+								"action":           map[string]any{"type": "string", "description": "具体操作"},
+								"position":         map[string]any{"type": "string", "description": "仓位"},
+								"buyPriceRange":    map[string]any{"type": "string", "description": "买入区间"},
+								"stopLossPrice":    map[string]any{"type": "string", "description": "止损价"},
+								"target1":          map[string]any{"type": "string", "description": "第一目标"},
+								"target2":          map[string]any{"type": "string", "description": "第二目标"},
+								"strategy":         map[string]any{"type": "string", "description": "策略说明"},
+								"isBest":           map[string]any{"type": "boolean", "description": "是否最优"},
+								"triggerPriceMin":  map[string]any{"type": "number", "description": "触发价下限"},
+								"triggerPriceMax":  map[string]any{"type": "number", "description": "触发价上限"},
+								"stopLossPriceNum": map[string]any{"type": "number", "description": "止损价(数值)"},
+								"target1Min":       map[string]any{"type": "number", "description": "目标1下限"},
+								"target1Max":       map[string]any{"type": "number", "description": "目标1上限"},
+								"target2Min":       map[string]any{"type": "number", "description": "目标2下限"},
+								"target2Max":       map[string]any{"type": "number", "description": "目标2上限"},
+							},
+						},
+					},
+					"discipline": map[string]any{
+						"type":        "array",
+						"description": "操作纪律数组（可选，传入则整体覆盖）",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"principle": map[string]any{"type": "string", "description": "原则"},
+								"detail":    map[string]any{"type": "string", "description": "说明"},
+							},
+						},
+					},
+					"summary": map[string]any{
+						"type":        "string",
+						"description": "操作总结（可选）",
+					},
+					"riskWarning": map[string]any{
+						"type":        "string",
+						"description": "风险提示（可选）",
+					},
+					"status": map[string]any{
+						"type":        "string",
+						"description": "状态（可选）：pending/executing/done/cancelled",
+					},
+					"enableAlert": map[string]any{
+						"type":        "boolean",
+						"description": "是否开启盘中预警（可选）",
+					},
+					"notifyChannels": map[string]any{
+						"type":        "array",
+						"description": "通知渠道数组（可选）：app/feishu/dingding",
+						"items":       map[string]any{"type": "string"},
+					},
+				},
+				Required: []string{"planId"},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "UpdateDailyOperationPlanStatus",
+			Description: "快速更新操作计划状态。需要计划 ID 和新状态值。",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"planId": map[string]any{
+						"type":        "number",
+						"description": "操作计划 ID",
+					},
+					"status": map[string]any{
+						"type":        "string",
+						"description": "新状态：pending=待执行，executing=执行中，done=已完成，cancelled=已取消",
+					},
+				},
+				Required: []string{"planId", "status"},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
 			Name:        "GetAIAnalysisHistory",
 			Description: "查询历史AI分析报告。可以根据股票代码、股票名称、问题关键词、日期范围等条件筛选历史AI分析记录。",
 			Parameters: &FunctionParameters{
@@ -1282,6 +1554,55 @@ func Tools(tools []Tool) []Tool {
 						"description": "每页条数，默认10",
 					},
 				},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "GetTradingRecordList",
+			Description: "查询用户交易日志（买入/卖出记录）。可按股票代码或名称关键词、买卖方向、交易日期范围筛选，并支持分页。返回包含盈亏金额、盈亏率等信息。",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"keyword": map[string]any{
+						"type":        "string",
+						"description": "股票代码或名称关键词（可选，模糊匹配）",
+					},
+					"direction": map[string]any{
+						"type":        "string",
+						"description": "交易方向筛选：买入 或 卖出，不传则返回全部",
+					},
+					"startDate": map[string]any{
+						"type":        "string",
+						"description": "交易时间起始日期，格式：YYYY-MM-DD（可选，含当日）",
+					},
+					"endDate": map[string]any{
+						"type":        "string",
+						"description": "交易时间结束日期，格式：YYYY-MM-DD（可选，含当日）",
+					},
+					"page": map[string]any{
+						"type":        "integer",
+						"description": "页码，默认1",
+					},
+					"pageSize": map[string]any{
+						"type":        "integer",
+						"description": "每页条数，默认20，最大50",
+					},
+				},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "GetTradingRecordStatistics",
+			Description: "获取用户交易日志的统计概况，包括累计买入/卖出金额、总盈亏、收益率、当前持仓数、持仓成本与市值，以及当日盈亏与收益率。基于全部历史记录按FIFO计算，无需传参。",
+			Parameters: &FunctionParameters{
+				Type:       "object",
+				Properties: map[string]any{},
 			},
 		},
 	})
@@ -1846,13 +2167,31 @@ func Tools(tools []Tool) []Tool {
 		Type: "function",
 		Function: ToolFunction{
 			Name:        "GetStockLatestFinance",
-			Description: "获取股票最新财务主要数据，包括每股收益(EPS)、每股净资产(BPS)、净资产收益率(ROE)、营业收入、净利润及同比/环比增速等。数据来源于东方财富F10。",
+			Description: "获取A股股票最新财务主要数据，包括每股收益(EPS)、每股净资产(BPS)、净资产收益率(ROE)、营业收入、净利润及同比/环比增速等。数据来源于东方财富F10（HSF10，沪深京A股市场）。仅适用于A股（沪市/深市/北交所），港股请使用 GetHKStockLatestFinance，美股暂不支持。",
 			Parameters: &FunctionParameters{
 				Type: "object",
 				Properties: map[string]any{
 					"stockCode": map[string]any{
 						"type":        "string",
-						"description": "股票代码，如 600519、000001.SZ、600000.SH",
+						"description": "A股股票代码，支持 600519、000001.SZ、600000.SH、830799.BJ 等格式",
+					},
+				},
+				Required: []string{"stockCode"},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "GetHKStockLatestFinance",
+			Description: "获取港股股票最新财务主要指标，包括基本/稀释每股收益、TTM每股收益、每股净资产、每股经营现金流、营业总收入、毛利润、归母净利润、同比/环比增速、平均/年化净资产收益率、毛利率、净利率、资产负债率、流动比率等。数据来源于东方财富港股F10（HKF10）。仅适用于港股（.HK 后缀，如 00700.HK 腾讯控股、09988.HK 阿里巴巴）。A股请使用 GetStockLatestFinance。",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"stockCode": map[string]any{
+						"type":        "string",
+						"description": "港股股票代码，支持 00700.HK、00700、hk00700 等格式",
 					},
 				},
 				Required: []string{"stockCode"},
@@ -2331,6 +2670,7 @@ var dataToolGroupMap = map[string]dataToolGroup{
 	"IsTradingDay":       dataToolGroupBase,
 	"GetNextTradingDay":  dataToolGroupBase,
 	"GetFollowedStocks":  dataToolGroupBase,
+	"CleanupStockCodes":  dataToolGroupBase,
 
 	"GetStockInfo":                dataToolGroupStockAnalysis,
 	"GetStockKLine":               dataToolGroupStockAnalysis,
@@ -2348,6 +2688,7 @@ var dataToolGroupMap = map[string]dataToolGroup{
 	"GetTdxCompanyCategory":       dataToolGroupStockAnalysis,
 	"GetTdxSymbolBelongBoard":     dataToolGroupStockAnalysis,
 	"GetStockLatestFinance":       dataToolGroupStockAnalysis,
+	"GetHKStockLatestFinance":     dataToolGroupStockAnalysis,
 	"GetStockQtrMainFinance":      dataToolGroupStockAnalysis,
 	"GetStockOrgPredict":          dataToolGroupStockAnalysis,
 	"GetStockPredictSummary":      dataToolGroupStockAnalysis,
@@ -2444,18 +2785,24 @@ var dataToolGroupMap = map[string]dataToolGroup{
 	"GetAIAnalysisHistory":         dataToolGroupAIAnalysis,
 	"GetAIAnalysisDetail":          dataToolGroupAIAnalysis,
 
-	"SetTradingPrice":        dataToolGroupOperations,
-	"FollowStock":            dataToolGroupOperations,
-	"SendDingDingMessage":    dataToolGroupOperations,
-	"SendToDingDing":         dataToolGroupOperations,
-	"SendFeishuMessage":      dataToolGroupOperations,
-	"SendToFeishu":           dataToolGroupOperations,
-	"SearchFund":             dataToolGroupOperations,
-	"GetFundInfo":            dataToolGroupOperations,
-	"GetFundKLine":           dataToolGroupOperations,
-	"GetFundHistoryNetValue": dataToolGroupOperations,
-	"GetFundTop10Holdings":   dataToolGroupOperations,
-	"GetEconomicData":        dataToolGroupOperations,
+	"SetTradingPrice":                dataToolGroupOperations,
+	"FollowStock":                    dataToolGroupOperations,
+	"AddDailyOperationPlan":          dataToolGroupOperations,
+	"GetDailyOperationPlanList":      dataToolGroupOperations,
+	"UpdateDailyOperationPlan":       dataToolGroupOperations,
+	"UpdateDailyOperationPlanStatus": dataToolGroupOperations,
+	"SendDingDingMessage":            dataToolGroupOperations,
+	"SendToDingDing":                 dataToolGroupOperations,
+	"SendFeishuMessage":              dataToolGroupOperations,
+	"SendToFeishu":                   dataToolGroupOperations,
+	"SearchFund":                     dataToolGroupOperations,
+	"GetFundInfo":                    dataToolGroupOperations,
+	"GetFundKLine":                   dataToolGroupOperations,
+	"GetFundHistoryNetValue":         dataToolGroupOperations,
+	"GetFundTop10Holdings":           dataToolGroupOperations,
+	"GetEconomicData":                dataToolGroupOperations,
+	"GetTradingRecordList":           dataToolGroupOperations,
+	"GetTradingRecordStatistics":     dataToolGroupOperations,
 
 	// 分组与概念标签管理（16 个工具）
 	"GetStockGroups":          dataToolGroupOperations,
@@ -2474,6 +2821,11 @@ var dataToolGroupMap = map[string]dataToolGroup{
 	"BatchAddStocksToConcept": dataToolGroupOperations,
 	"MergeStockConcepts":      dataToolGroupOperations,
 	"ReorganizeStockGroups":   dataToolGroupOperations,
+
+	"ListPromptTemplates":  dataToolGroupBase,
+	"GetPromptTemplate":    dataToolGroupBase,
+	"SavePromptTemplate":   dataToolGroupBase,
+	"DeletePromptTemplate": dataToolGroupBase,
 }
 
 type dataToolGroupKeywords struct {
@@ -2522,6 +2874,8 @@ var dataToolGroupKeywordsList = []dataToolGroupKeywords{
 		"预警", "价位", "开仓", "成本价", "钉钉", "QQ", "通知", "推送", "发送消息",
 		"基金", "基金代码", "基金名称", "净值",
 		"关注", "自选", "加自选", "加入分组", "设置概念", "概念标签", "归类", "持仓", "持仓量", "止盈价", "止损价",
+		"交易日志", "交易记录", "盈亏",
+		"操作计划", "每日计划", "操作方案", "明日操作", "明天操作", "盘中预警",
 	}},
 }
 
@@ -3060,6 +3414,95 @@ func appendAgentParityTools(tools []Tool) []Tool {
 					},
 				},
 				Required: []string{"assignments"},
+			},
+		},
+	})
+
+	// 提示词模板管理（4 个工具）
+	// 1. ListPromptTemplates
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "ListPromptTemplates",
+			Description: "查询提示词模板列表。可按名称和类型筛选，为空则返回全部。返回摘要列表（content 截断为 200 字预览）。",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "可选，按模板名称精确筛选",
+					},
+					"type": map[string]any{
+						"type":        "string",
+						"description": "可选，按模板类型筛选（如 system/user）",
+					},
+				},
+			},
+		},
+	})
+	// 2. GetPromptTemplate
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "GetPromptTemplate",
+			Description: "按 ID 获取单个提示词模板的完整内容。当需要查看模板全文时使用。",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"id": map[string]any{
+						"type":        "integer",
+						"description": "模板 ID",
+					},
+				},
+				Required: []string{"id"},
+			},
+		},
+	})
+	// 3. SavePromptTemplate
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "SavePromptTemplate",
+			Description: "创建或更新提示词模板。id > 0 时为更新已有模板，否则为新建。",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"id": map[string]any{
+						"type":        "integer",
+						"description": "可选，模板 ID。提供时为更新，不提供时为新建",
+					},
+					"name": map[string]any{
+						"type":        "string",
+						"description": "模板名称",
+					},
+					"content": map[string]any{
+						"type":        "string",
+						"description": "模板内容",
+					},
+					"type": map[string]any{
+						"type":        "string",
+						"description": "可选，模板类型（如 system/user）",
+					},
+				},
+				Required: []string{"name", "content"},
+			},
+		},
+	})
+	// 4. DeletePromptTemplate
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "DeletePromptTemplate",
+			Description: "按 ID 删除提示词模板。",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"id": map[string]any{
+						"type":        "integer",
+						"description": "模板 ID",
+					},
+				},
+				Required: []string{"id"},
 			},
 		},
 	})

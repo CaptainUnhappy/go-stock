@@ -40,7 +40,7 @@ export function CalculateNextRunTime(arg1:string):Promise<string>;
 
 export function CalculateNextRunTimes(arg1:string,arg2:number):Promise<Array<string>>;
 
-export function ChatWithAgent(arg1:string,arg2:number,arg3:any,arg4:boolean,arg5:number,arg6:boolean,arg7:string):Promise<void>;
+export function ChatWithAgent(arg1:string,arg2:number,arg3:any,arg4:boolean,arg5:number,arg6:boolean,arg7:string,arg8:string):Promise<void>;
 
 export function CheckDeviceBinding(arg1:string,arg2:string):Promise<Record<string, any>>;
 
@@ -72,11 +72,17 @@ export function DeleteCronTask(arg1:number):Promise<string>;
 
 export function DeleteCustomStrategy(arg1:number):Promise<string>;
 
+export function DeleteDailyOperationPlan(arg1:number):Promise<string>;
+
+export function DeleteFilesystemSkill(arg1:string):Promise<string>;
+
 export function DeleteMCPServer(arg1:number):Promise<string>;
 
 export function DeletePromptTemplate(arg1:number):Promise<string>;
 
 export function DeleteSkill(arg1:number):Promise<string>;
+
+export function DeleteSkillFile(arg1:string,arg2:string):Promise<string>;
 
 export function DeleteStockChangeHistory(arg1:number):Promise<string>;
 
@@ -182,6 +188,10 @@ export function GetDailyChangeStats(arg1:number):Promise<Array<data.DailyChangeS
 
 export function GetDailyDimensionStats(arg1:string,arg2:string,arg3:number):Promise<Array<data.DailyDimensionStats>>;
 
+export function GetDailyOperationPlanByID(arg1:number):Promise<models.DailyOperationPlan>;
+
+export function GetDailyOperationPlanList(arg1:models.DailyOperationPlanQuery):Promise<models.DailyOperationPlanPageData>;
+
 export function GetEffectiveSponsorVip():Promise<Record<string, any>>;
 
 export function GetFeishuBotStatus():Promise<string>;
@@ -210,6 +220,10 @@ export function GetHistoryTdxTransactionData(arg1:string,arg2:string):Promise<an
 
 export function GetHotStrategy():Promise<Record<string, any>>;
 
+export function GetIndexQuotes():Promise<Array<data.IndexQuoteItem>>;
+
+export function GetIndexTline(arg1:string):Promise<data.IndexTlineResult>;
+
 export function GetIndustryMoneyRankSina(arg1:string,arg2:string):Promise<Array<Record<string, any>>>;
 
 export function GetIndustryRank(arg1:string,arg2:number):Promise<Array<any>>;
@@ -224,6 +238,8 @@ export function GetMCPToolsByServerID(arg1:number):Promise<Array<models.MCPServe
 
 export function GetMachineId():Promise<string>;
 
+export function GetMarketEmotion():Promise<data.MarketEmotion>;
+
 export function GetMarketStatisticByDate(arg1:string):Promise<Array<models.MarketStatistic>>;
 
 export function GetMoneyRankSina(arg1:string):Promise<Array<Record<string, any>>>;
@@ -233,6 +249,8 @@ export function GetPromptTemplateList(arg1:models.PromptTemplateQuery):Promise<m
 export function GetPromptTemplates(arg1:string,arg2:string):Promise<any>;
 
 export function GetRecentDaysMarketStatistic(arg1:number):Promise<Array<models.MarketStatistic>>;
+
+export function GetSectorAnchors(arg1:string):Promise<Array<data.SectorAnchor>>;
 
 export function GetSkillByID(arg1:number):Promise<models.Skill>;
 
@@ -320,6 +338,8 @@ export function HotStock(arg1:string):Promise<any>;
 
 export function HotTopic(arg1:number):Promise<Array<any>>;
 
+export function ImportSkillPackage():Promise<string>;
+
 export function IndustryResearchReport(arg1:string):Promise<Array<any>>;
 
 export function InitCronTasks():Promise<void>;
@@ -336,6 +356,10 @@ export function IsTradingTime():Promise<boolean>;
 
 export function IsUSTradingTime():Promise<boolean>;
 
+export function ListFilesystemSkills():Promise<Array<main.FilesystemSkillInfo>>;
+
+export function ListSkillFiles(arg1:string):Promise<Array<main.SkillFileInfo>>;
+
 export function LongTigerRank(arg1:string):Promise<any>;
 
 export function NewChatStream(arg1:string,arg2:string,arg3:string,arg4:number,arg5:any,arg6:boolean,arg7:boolean):Promise<void>;
@@ -349,6 +373,8 @@ export function PromptPlazaRequest(arg1:string,arg2:string,arg3:string,arg4:Reco
 export function QuitApp():Promise<void>;
 
 export function ReFleshTelegraphList(arg1:string):Promise<any>;
+
+export function ReadSkillFile(arg1:string,arg2:string):Promise<string>;
 
 export function RefreshAllTdxTransactionData(arg1:string):Promise<any>;
 
@@ -371,6 +397,8 @@ export function SaveAiAssistantSession(arg1:string,arg2:Array<models.AiAssistant
 export function SaveAsMarkdown(arg1:string,arg2:string):Promise<string>;
 
 export function SaveCustomStrategy(arg1:models.CustomStrategy):Promise<string>;
+
+export function SaveDailyOperationPlan(arg1:models.DailyOperationPlan):Promise<string>;
 
 export function SaveImage(arg1:string,arg2:string):Promise<string>;
 
@@ -424,6 +452,8 @@ export function UnFollow(arg1:string):Promise<string>;
 
 export function UnFollowFund(arg1:string):Promise<string>;
 
+export function UpdateAiConfigs(arg1:Array<data.AIConfig>):Promise<string>;
+
 export function UpdateAiRecommendStocksAlert(arg1:number,arg2:boolean):Promise<string>;
 
 export function UpdateConcept(arg1:number,arg2:string):Promise<string>;
@@ -431,6 +461,10 @@ export function UpdateConcept(arg1:number,arg2:string):Promise<string>;
 export function UpdateConfig(arg1:data.SettingConfig):Promise<string>;
 
 export function UpdateCronTask(arg1:models.CronTask):Promise<string>;
+
+export function UpdateDailyOperationPlanAlert(arg1:number,arg2:boolean):Promise<string>;
+
+export function UpdateDailyOperationPlanStatus(arg1:number,arg2:string):Promise<string>;
 
 export function UpdateGroup(arg1:number,arg2:string):Promise<string>;
 
@@ -445,3 +479,5 @@ export function UpdateSkill(arg1:models.Skill):Promise<string>;
 export function UpdateTradingRecord(arg1:data.TradingRecord):Promise<void>;
 
 export function ValidateCronExpr(arg1:string):Promise<string>;
+
+export function WriteSkillFile(arg1:string,arg2:string,arg3:string):Promise<string>;

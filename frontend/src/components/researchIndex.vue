@@ -16,6 +16,7 @@ import UplimitLadder from "./uplimitLadder.vue";
 import PromptPlaza from "./promptPlaza.vue";
 import PromptQa from "./promptQa.vue";
 import SelectStock from "./SelectStock.vue";
+import DailyOperationPlan from "./DailyOperationPlan.vue";
 import {EventsOff, EventsOn} from "../../wailsjs/runtime";
 import {useRoute} from 'vue-router'
 
@@ -79,15 +80,18 @@ function updateTab(name) {
       <n-tab-pane name="交易日志">
         <TradingRecordManager />
       </n-tab-pane>
+      <n-tab-pane name="每日操作计划">
+        <DailyOperationPlan/>
+      </n-tab-pane>
 <!--      <n-tab-pane name="全部股票信息">-->
 <!--        <AllStockInfoList/>-->
 <!--      </n-tab-pane>-->
       <n-tab-pane name="MCP服务">
         <MCPServiceManager/>
       </n-tab-pane>
-<!--      <n-tab-pane name="技能管理">-->
-<!--        <SkillManager/>-->
-<!--      </n-tab-pane>-->
+      <n-tab-pane name="技能管理">
+        <SkillManager/>
+      </n-tab-pane>
     </n-tabs>
   </n-card>
 </template>

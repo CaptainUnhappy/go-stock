@@ -70,8 +70,8 @@ export function CalculateNextRunTimes(arg1, arg2) {
   return window['go']['main']['App']['CalculateNextRunTimes'](arg1, arg2);
 }
 
-export function ChatWithAgent(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
-  return window['go']['main']['App']['ChatWithAgent'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+export function ChatWithAgent(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+  return window['go']['main']['App']['ChatWithAgent'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
 }
 
 export function CheckDeviceBinding(arg1, arg2) {
@@ -134,6 +134,14 @@ export function DeleteCustomStrategy(arg1) {
   return window['go']['main']['App']['DeleteCustomStrategy'](arg1);
 }
 
+export function DeleteDailyOperationPlan(arg1) {
+  return window['go']['main']['App']['DeleteDailyOperationPlan'](arg1);
+}
+
+export function DeleteFilesystemSkill(arg1) {
+  return window['go']['main']['App']['DeleteFilesystemSkill'](arg1);
+}
+
 export function DeleteMCPServer(arg1) {
   return window['go']['main']['App']['DeleteMCPServer'](arg1);
 }
@@ -144,6 +152,10 @@ export function DeletePromptTemplate(arg1) {
 
 export function DeleteSkill(arg1) {
   return window['go']['main']['App']['DeleteSkill'](arg1);
+}
+
+export function DeleteSkillFile(arg1, arg2) {
+  return window['go']['main']['App']['DeleteSkillFile'](arg1, arg2);
 }
 
 export function DeleteStockChangeHistory(arg1) {
@@ -354,6 +366,14 @@ export function GetDailyDimensionStats(arg1, arg2, arg3) {
   return window['go']['main']['App']['GetDailyDimensionStats'](arg1, arg2, arg3);
 }
 
+export function GetDailyOperationPlanByID(arg1) {
+  return window['go']['main']['App']['GetDailyOperationPlanByID'](arg1);
+}
+
+export function GetDailyOperationPlanList(arg1) {
+  return window['go']['main']['App']['GetDailyOperationPlanList'](arg1);
+}
+
 export function GetEffectiveSponsorVip() {
   return window['go']['main']['App']['GetEffectiveSponsorVip']();
 }
@@ -410,6 +430,14 @@ export function GetHotStrategy() {
   return window['go']['main']['App']['GetHotStrategy']();
 }
 
+export function GetIndexQuotes() {
+  return window['go']['main']['App']['GetIndexQuotes']();
+}
+
+export function GetIndexTline(arg1) {
+  return window['go']['main']['App']['GetIndexTline'](arg1);
+}
+
 export function GetIndustryMoneyRankSina(arg1, arg2) {
   return window['go']['main']['App']['GetIndustryMoneyRankSina'](arg1, arg2);
 }
@@ -438,6 +466,10 @@ export function GetMachineId() {
   return window['go']['main']['App']['GetMachineId']();
 }
 
+export function GetMarketEmotion() {
+  return window['go']['main']['App']['GetMarketEmotion']();
+}
+
 export function GetMarketStatisticByDate(arg1) {
   return window['go']['main']['App']['GetMarketStatisticByDate'](arg1);
 }
@@ -456,6 +488,10 @@ export function GetPromptTemplates(arg1, arg2) {
 
 export function GetRecentDaysMarketStatistic(arg1) {
   return window['go']['main']['App']['GetRecentDaysMarketStatistic'](arg1);
+}
+
+export function GetSectorAnchors(arg1) {
+  return window['go']['main']['App']['GetSectorAnchors'](arg1);
 }
 
 export function GetSkillByID(arg1) {
@@ -630,6 +666,10 @@ export function HotTopic(arg1) {
   return window['go']['main']['App']['HotTopic'](arg1);
 }
 
+export function ImportSkillPackage() {
+  return window['go']['main']['App']['ImportSkillPackage']();
+}
+
 export function IndustryResearchReport(arg1) {
   return window['go']['main']['App']['IndustryResearchReport'](arg1);
 }
@@ -662,6 +702,14 @@ export function IsUSTradingTime() {
   return window['go']['main']['App']['IsUSTradingTime']();
 }
 
+export function ListFilesystemSkills() {
+  return window['go']['main']['App']['ListFilesystemSkills']();
+}
+
+export function ListSkillFiles(arg1) {
+  return window['go']['main']['App']['ListSkillFiles'](arg1);
+}
+
 export function LongTigerRank(arg1) {
   return window['go']['main']['App']['LongTigerRank'](arg1);
 }
@@ -688,6 +736,10 @@ export function QuitApp() {
 
 export function ReFleshTelegraphList(arg1) {
   return window['go']['main']['App']['ReFleshTelegraphList'](arg1);
+}
+
+export function ReadSkillFile(arg1, arg2) {
+  return window['go']['main']['App']['ReadSkillFile'](arg1, arg2);
 }
 
 export function RefreshAllTdxTransactionData(arg1) {
@@ -732,6 +784,10 @@ export function SaveAsMarkdown(arg1, arg2) {
 
 export function SaveCustomStrategy(arg1) {
   return window['go']['main']['App']['SaveCustomStrategy'](arg1);
+}
+
+export function SaveDailyOperationPlan(arg1) {
+  return window['go']['main']['App']['SaveDailyOperationPlan'](arg1);
 }
 
 export function SaveImage(arg1, arg2) {
@@ -838,6 +894,10 @@ export function UnFollowFund(arg1) {
   return window['go']['main']['App']['UnFollowFund'](arg1);
 }
 
+export function UpdateAiConfigs(arg1) {
+  return window['go']['main']['App']['UpdateAiConfigs'](arg1);
+}
+
 export function UpdateAiRecommendStocksAlert(arg1, arg2) {
   return window['go']['main']['App']['UpdateAiRecommendStocksAlert'](arg1, arg2);
 }
@@ -852,6 +912,14 @@ export function UpdateConfig(arg1) {
 
 export function UpdateCronTask(arg1) {
   return window['go']['main']['App']['UpdateCronTask'](arg1);
+}
+
+export function UpdateDailyOperationPlanAlert(arg1, arg2) {
+  return window['go']['main']['App']['UpdateDailyOperationPlanAlert'](arg1, arg2);
+}
+
+export function UpdateDailyOperationPlanStatus(arg1, arg2) {
+  return window['go']['main']['App']['UpdateDailyOperationPlanStatus'](arg1, arg2);
 }
 
 export function UpdateGroup(arg1, arg2) {
@@ -880,4 +948,8 @@ export function UpdateTradingRecord(arg1) {
 
 export function ValidateCronExpr(arg1) {
   return window['go']['main']['App']['ValidateCronExpr'](arg1);
+}
+
+export function WriteSkillFile(arg1, arg2, arg3) {
+  return window['go']['main']['App']['WriteSkillFile'](arg1, arg2, arg3);
 }
