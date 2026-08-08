@@ -137,7 +137,4 @@ scripts/__pycache__/
 *.go.[0-9]*
 *.vue.[0-9]*
 build/handoff/
-quant/earnings_growth/data
-quant/REVS 量化多因⼦选股/data
-quant/earnings_growth/output/
-quant/REVS 量化多因⼦选股/output/
+quant/
