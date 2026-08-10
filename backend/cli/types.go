@@ -22,17 +22,26 @@ type Result struct {
 	Title       string `json:"title"`
 	ReadOnly    bool   `json:"readOnly"`
 	Output      string `json:"output"`
+	Data        any    `json:"data,omitempty"`
 	GeneratedAt string `json:"generatedAt"`
 }
 
 type Handler func(context.Context, map[string]any) (string, error)
 
+type HandlerResult struct {
+	Output string
+	Data   any
+}
+
+type StructuredHandler func(context.Context, map[string]any) (HandlerResult, error)
+
 type Command struct {
-	Path        string
-	Title       string
-	Description string
-	ReadOnly    bool
-	Handler     Handler
+	Path              string
+	Title             string
+	Description       string
+	ReadOnly          bool
+	Handler           Handler
+	StructuredHandler StructuredHandler
 }
 
 type Runner struct {
@@ -74,7 +83,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (Result, error) {
 			return Result{}, fmt.Errorf("unknown command path %q; run `help` to inspect supported commands", req.CommandPath)
 		}
 	}
-	if cmd.Handler == nil {
+	if cmd.Handler == nil && cmd.StructuredHandler == nil {
 		return Result{}, fmt.Errorf("command %q is documented but not executable yet", cmd.Path)
 	}
 
@@ -86,6 +95,15 @@ func (r *Runner) Run(ctx context.Context, req Request) (Result, error) {
 		args["confirmToken"] = strings.TrimSpace(req.ConfirmToken)
 	}
 
+	if cmd.StructuredHandler != nil {
+		handled, err := cmd.StructuredHandler(ctx, args)
+		if err != nil {
+			return Result{}, err
+		}
+		result := formatResult(req, cmd, handled.Output)
+		result.Data = handled.Data
+		return result, nil
+	}
 	out, err := cmd.Handler(ctx, args)
 	if err != nil {
 		return Result{}, err

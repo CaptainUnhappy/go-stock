@@ -627,3 +627,87 @@ func TestKLineAdjustFlagDefaultsAndValidation(t *testing.T) {
 		t.Fatalf("kLineAdjustFlag bad err = nil, got %q", got)
 	}
 }
+
+func TestIndexHistoryCommandStructuredData(t *testing.T) {
+	ensureTestDB(t)
+	original := fetchIndexHistory
+	defer func() { fetchIndexHistory = original }()
+	fetchIndexHistory = func(_ context.Context, code, start, end string) (*data.IndexHistoryResult, error) {
+		if code != "883418.TI" || start != "2025-01-01" || end != "2025-01-03" {
+			t.Fatalf("unexpected fetch args: %s %s %s", code, start, end)
+		}
+		return &data.IndexHistoryResult{
+			Code: code, Interval: "1d", Start: start, End: end, Source: "ths-public-web", AsOf: "2025-01-03T16:00:00+08:00", Warnings: []string{},
+			Bars: []data.IndexPriceBar{{Date: "2025-01-02", Open: 1, High: 2, Low: 0.5, Close: 1.5, Volume: 10, Amount: 20}},
+		}, nil
+	}
+	runner := MustNewRunner()
+	result, err := runner.Run(context.Background(), Request{
+		CommandPath: "index history",
+		Args:        map[string]any{"name": "微盘股", "start": "2025-01-01", "end": "2025-01-03"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	structured, ok := result.Data.(*data.IndexHistoryResult)
+	if !ok || structured.Code != "883418.TI" || structured.Name != "微盘股" || len(structured.Bars) != 1 {
+		t.Fatalf("unexpected structured data: %#v", result.Data)
+	}
+	if !strings.Contains(result.Output, "数据源：ths-public-web") || !strings.Contains(result.Output, "成交额") {
+		t.Fatalf("output = %s", result.Output)
+	}
+	jsonOutput, err := runner.RunText(context.Background(), Request{
+		CommandPath: "index history", Format: "json",
+		Args: map[string]any{"code": "883418.ti", "start": "2025-01-01", "end": "2025-01-03"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(jsonOutput, `"data"`) || !strings.Contains(jsonOutput, `"bars"`) || !strings.Contains(jsonOutput, `"adjust": null`) {
+		t.Fatalf("json output = %s", jsonOutput)
+	}
+}
+
+func TestIndexHistoryArgumentValidation(t *testing.T) {
+	ensureTestDB(t)
+	runner := MustNewRunner()
+	tests := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{name: "missing selector", args: map[string]any{"start": "2025-01-01", "end": "2025-01-02"}, want: "至少提供一个"},
+		{name: "mismatch", args: map[string]any{"name": "微盘股", "code": "000001.SH", "start": "2025-01-01", "end": "2025-01-02"}, want: "指向不同指数"},
+		{name: "interval", args: map[string]any{"code": "883418.TI", "start": "2025-01-01", "end": "2025-01-02", "interval": "1h"}, want: "仅支持 1d"},
+		{name: "adjust", args: map[string]any{"code": "883418.TI", "start": "2025-01-01", "end": "2025-01-02", "adjustFlag": "qfq"}, want: "不接受复权参数"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := runner.Run(context.Background(), Request{CommandPath: "index history", Args: tt.args})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestTIIndexNormalizationCatalogAndPortfolioBoundary(t *testing.T) {
+	ensureTestDB(t)
+	if got := normalizeStockCodeToken("883418.ti"); got != "883418.TI" {
+		t.Fatalf("normalizeStockCodeToken = %q", got)
+	}
+	if got := normalizeStockCodeToken("883418"); got != "bj883418" {
+		t.Fatalf("bare code semantics changed: %q", got)
+	}
+	spec, ok := majorIndexSpecByName("微盘股")
+	if !ok || spec.Code != "883418.TI" {
+		t.Fatalf("microcap spec = %+v, %v", spec, ok)
+	}
+	for _, command := range []string{"portfolio add", "portfolio remove", "portfolio group assign", "portfolio group remove"} {
+		args := map[string]any{"stockCode": "883418.TI", "groupId": 1}
+		_, err := MustNewRunner().Run(context.Background(), Request{CommandPath: command, Args: args})
+		if err == nil || !strings.Contains(err.Error(), "不接受 .TI") {
+			t.Fatalf("%s err = %v", command, err)
+		}
+	}
+}

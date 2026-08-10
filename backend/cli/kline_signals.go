@@ -48,7 +48,16 @@ func runKlineSignals(_ *toolRunner) Handler {
 		if err != nil {
 			return "", err
 		}
-		summary, ok := buildKLineSignalSummary(code, kLineType, limit, adjustFlag)
+		if data.IsTHSIndexCode(code) {
+			if raw := strings.TrimSpace(optionalString(args, "adjustFlag", "")); raw != "" && !strings.EqualFold(raw, "none") && raw != "0" {
+				return "", fmt.Errorf(".TI 指数没有复权语义；请省略 --adjust 或使用 --adjust none")
+			}
+			adjustFlag = "none"
+		}
+		summary, ok, fetchErr := buildKLineSignalSummaryWithError(code, kLineType, limit, adjustFlag)
+		if fetchErr != "" {
+			return "", fmt.Errorf("%s：%s", code, fetchErr)
+		}
 		if !ok {
 			return fmt.Sprintf("%s：未获取到可计算指标信号的 K 线数据，请检查股票代码、周期或增加 --limit。", code), nil
 		}
@@ -57,20 +66,28 @@ func runKlineSignals(_ *toolRunner) Handler {
 }
 
 func buildKLineSignalSummary(code, kLineType string, limit int, adjustFlag string) (kLineSignalSummary, bool) {
+	summary, ok, _ := buildKLineSignalSummaryWithError(code, kLineType, limit, adjustFlag)
+	return summary, ok
+}
+
+func buildKLineSignalSummaryWithError(code, kLineType string, limit int, adjustFlag string) (kLineSignalSummary, bool, string) {
 	if limit < 180 {
 		limit = 180
 	}
 	result := data.FetchKLineWithFallback(code, "", data.NormalizeKLineType(kLineType), limit, "", adjustFlag)
+	if strings.TrimSpace(result.Error) != "" {
+		return kLineSignalSummary{}, false, result.Error
+	}
 	if result.Data == nil || len(*result.Data) < 2 {
-		return kLineSignalSummary{}, false
+		return kLineSignalSummary{}, false, ""
 	}
 	bars := parseKLineBars(*result.Data)
 	if len(bars.close) < 2 {
-		return kLineSignalSummary{}, false
+		return kLineSignalSummary{}, false, ""
 	}
 	signals := evaluateKLineSignals(bars)
 	if len(signals) == 0 {
-		return kLineSignalSummary{}, false
+		return kLineSignalSummary{}, false, ""
 	}
 	summary := kLineSignalSummary{
 		Total:       len(signals),
@@ -92,7 +109,7 @@ func buildKLineSignalSummary(code, kLineType string, limit int, adjustFlag strin
 			summary.Neutral++
 		}
 	}
-	return summary, true
+	return summary, true, ""
 }
 
 func formatKLineSignalSummary(code, kLineType string, summary kLineSignalSummary) string {

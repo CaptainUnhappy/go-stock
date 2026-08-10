@@ -555,8 +555,10 @@ func (t *TencentKLineApi) convertRowsToKLineData(rows [][]string) []KLineData {
 }
 
 type KLineSourceResult struct {
-	Data   *[]KLineData `json:"data"`
-	Source string       `json:"source"`
+	Data     *[]KLineData `json:"data"`
+	Source   string       `json:"source"`
+	Warnings []string     `json:"warnings,omitempty"`
+	Error    string       `json:"error,omitempty"`
 }
 
 // eastMoneyAdjustFromFlag 将前端复权标识转为东方财富 API 的 fqt 参数值。
@@ -592,12 +594,16 @@ func GlobalIndexLegacyCode(stockCode string) (string, bool) {
 	}
 }
 
-// FetchKLineWithFallback 按降级链获取 K 线数据：MAC→东方财富→(海外指数旧腾讯代码)→(港美股返回)→新浪→腾讯→通达信。
+// FetchKLineWithFallback 按降级链获取 K 线数据。.TI 指数只走同花顺指数客户端；
+// 其他标的按 MAC→东方财富→(海外指数旧腾讯代码)→(港美股返回)→新浪→腾讯→通达信。
 // adjustFlag 可选，控制复权类型："qfq"前复权、"hfq"后复权、"none"/"0"不复权；
 // 未传时各数据源保持原有默认行为（A股 MAC/通达信默认前复权，港股默认不复权，EastMoney 走 API 默认）。
 // 注意：新浪/腾讯数据源硬编码前复权作为兜底，adjustFlag 对其无效；港美股 ExKLine2 协议不支持复权。
 func FetchKLineWithFallback(stockCode, stockName, klt string, limit int, end string, adjustFlag ...string) *KLineSourceResult {
 	flag := adjustFlagFromVariadic(adjustFlag...)
+	if IsTHSIndexCode(stockCode) {
+		return fetchTHSIndexKLine(strings.ToUpper(strings.TrimSpace(stockCode)), klt, limit, end)
+	}
 
 	macResult := fetchFromMACWithTimeout(stockCode, klt, limit, 5*time.Second, flag)
 	if macResult != nil && macResult.Data != nil && len(*macResult.Data) > 0 {

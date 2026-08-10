@@ -53,6 +53,7 @@ type Settings struct {
 	QgqpBId                string `json:"qgqpBId" gorm:"column:qgqp_b_id"`
 	IwencaiApiKey          string `json:"iwencaiApiKey" gorm:"column:iwencai_api_key"`
 	EmApiKey               string `json:"emApiKey" gorm:"column:em_api_key"`
+	ThsFinanceApiKey       string `json:"thsFinanceApiKey" gorm:"column:ths_finance_api_key"`
 	WindowWidth            int    `json:"windowWidth"`
 	WindowHeight           int    `json:"windowHeight"`
 	PromptPlazaApiBase     string `json:"promptPlazaApiBase" gorm:"column:prompt_plaza_api_base"`
@@ -161,6 +162,7 @@ func UpdateConfig(s *SettingConfig) string {
 			"qgqp_b_id":                  s.QgqpBId,
 			"iwencai_api_key":            s.IwencaiApiKey,
 			"em_api_key":                 s.EmApiKey,
+			"ths_finance_api_key":        s.ThsFinanceApiKey,
 			"window_width":               s.WindowWidth,
 			"window_height":              s.WindowHeight,
 			"prompt_plaza_api_base":      s.PromptPlazaApiBase,
@@ -191,6 +193,15 @@ func UpdateConfig(s *SettingConfig) string {
 	ConfigureFromSettings(s)
 
 	return "保存成功！"
+}
+
+// EnsureSettingsSchema keeps GUI and standalone CLI startup on the same schema.
+// It is safe to call repeatedly; GORM only creates the table/columns that are missing.
+func EnsureSettingsSchema() error {
+	if db.Dao == nil {
+		return errors.New("database is not initialized")
+	}
+	return db.Dao.AutoMigrate(&Settings{})
 }
 
 func updateAiConfigs(aiConfigs []*AIConfig) error {

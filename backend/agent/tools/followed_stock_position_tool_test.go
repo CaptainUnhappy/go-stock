@@ -191,6 +191,14 @@ func TestSetFollowedStockPositionDefaultsSortToWatchList(t *testing.T) {
 	}
 }
 
+func TestSetFollowedStockPositionRejectsTIIndex(t *testing.T) {
+	tool := GetSetFollowedStockPositionTool()
+	_, err := tool.InvokableRun(context.Background(), `{"stockCode":"883418.TI","costPrice":1,"volume":1}`)
+	if err == nil || !strings.Contains(err.Error(), "不接受 .TI") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestGetFollowedStocksReturnsMarkdownTable(t *testing.T) {
 	ensureFollowedStockPositionTestDB(t)
 	cleanupFollowedStockPosition(t, "sh603690")

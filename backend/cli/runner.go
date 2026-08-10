@@ -26,7 +26,7 @@ func commandDefinitions() []Command {
 		write("portfolio add", "关注股票", runPortfolioAdd),
 		write("portfolio remove", "取消关注股票", runPortfolioRemove),
 		read("portfolio position get", "查看持仓提醒设置", r.call("GetFollowedStocks", nil)),
-		write("portfolio position set", "设置持仓提醒", r.call("SetFollowedStockPosition", nil)),
+		write("portfolio position set", "设置持仓提醒", runPortfolioPositionSet(r)),
 		read("portfolio group list", "查看分组", runPortfolioGroupList),
 		write("portfolio group add", "添加分组", runPortfolioGroupAdd),
 		write("portfolio group rename", "重命名分组", runPortfolioGroupRename),
@@ -43,6 +43,7 @@ func commandDefinitions() []Command {
 		read("market news", "市场快讯", runMarketNews),
 		read("market global-index", "全球股指", r.call("GlobalStockIndexesReadable", nil)),
 		read("market major-index", "重大指数", runMajorIndex),
+		readStructured("index history", "指数历史 K 线", runIndexHistory),
 		read("market industry-rank gain", "行业涨幅排名", r.call("GetIndustryRank", withDefaults(nil, map[string]any{"sort": "0", "limit": 20}))),
 		read("market industry-rank money", "行业资金排名", r.call("GetIndustryMoneyRank", withDefaults(nil, map[string]any{"fenlei": "0", "sort": "netamount", "limit": 20}))),
 		read("market industry-rank csrc-money", "证监会行业资金排名", r.call("GetIndustryMoneyRank", withDefaults(nil, map[string]any{"fenlei": "2", "sort": "netamount", "limit": 20}))),
@@ -637,6 +638,10 @@ func read(path, title string, handler Handler) Command {
 	return Command{Path: path, Title: title, ReadOnly: true, Handler: handler}
 }
 
+func readStructured(path, title string, handler StructuredHandler) Command {
+	return Command{Path: path, Title: title, ReadOnly: true, StructuredHandler: handler}
+}
+
 func write(path, title string, handler Handler) Command {
 	return Command{Path: path, Title: title, ReadOnly: false, Handler: handler}
 }
@@ -805,6 +810,9 @@ func normalizeStockCodeToken(code string) string {
 		return ""
 	}
 	lower := strings.ToLower(code)
+	if strings.HasSuffix(lower, ".ti") {
+		return strings.ToUpper(code)
+	}
 	if isBareSixDigitCode(lower) ||
 		strings.HasSuffix(lower, ".sz") ||
 		strings.HasSuffix(lower, ".sh") ||
@@ -907,6 +915,9 @@ func runPortfolioAdd(_ context.Context, args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := rejectIndexForStockCommand(code); err != nil {
+		return "", err
+	}
 	return data.NewStockDataApi().Follow(code), nil
 }
 
@@ -916,7 +927,31 @@ func runPortfolioRemove(_ context.Context, args map[string]any) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	if err := rejectIndexForStockCommand(code); err != nil {
+		return "", err
+	}
 	return data.NewStockDataApi().UnFollow(code), nil
+}
+
+func runPortfolioPositionSet(r *toolRunner) Handler {
+	return func(ctx context.Context, args map[string]any) (string, error) {
+		normalizeCommonArgs(args)
+		code, err := requiredString(args, "stockCode")
+		if err != nil {
+			return "", err
+		}
+		if err := rejectIndexForStockCommand(code); err != nil {
+			return "", err
+		}
+		return r.call("SetFollowedStockPosition", nil)(ctx, args)
+	}
+}
+
+func rejectIndexForStockCommand(code string) error {
+	if data.IsTHSIndexCode(code) {
+		return fmt.Errorf("%s 是同花顺指数代码，股票持仓、自选和分组命令不接受 .TI 指数", strings.ToUpper(strings.TrimSpace(code)))
+	}
+	return nil
 }
 
 func runPortfolioGroupList(context.Context, map[string]any) (string, error) {
@@ -970,6 +1005,9 @@ func runPortfolioGroupAssign(_ context.Context, args map[string]any) (string, er
 	if err != nil {
 		return "", err
 	}
+	if err := rejectIndexForStockCommand(code); err != nil {
+		return "", err
+	}
 	groupID := optionalInt(args, "groupId", 0)
 	if groupID <= 0 {
 		return "", fmt.Errorf("groupId must be greater than 0")
@@ -984,6 +1022,9 @@ func runPortfolioGroupRemove(_ context.Context, args map[string]any) (string, er
 	normalizeCommonArgs(args)
 	code, err := requiredString(args, "stockCode")
 	if err != nil {
+		return "", err
+	}
+	if err := rejectIndexForStockCommand(code); err != nil {
 		return "", err
 	}
 	groupID := optionalInt(args, "groupId", 0)
@@ -1164,6 +1205,7 @@ func majorIndexCatalog() []majorIndexSpec {
 		{Name: "科创芯片", Code: "000685.SH"},
 		{Name: "证券龙头", Code: "399437.SZ"},
 		{Name: "高端装备", Code: "930599.CSI"},
+		{Name: "微盘股", Aliases: []string{"微盘股指数"}, Code: "883418.TI"},
 		{Name: "中证银行", Code: "399986.SZ"},
 		{Name: "上证医药", Code: "000037.SH"},
 		{Name: "中证白酒", Code: "399997.SZ"},
@@ -1375,6 +1417,12 @@ func runKlineShow(r *toolRunner) Handler {
 		adjustFlag, err := kLineAdjustFlag(args, kLineType)
 		if err != nil {
 			return "", err
+		}
+		if data.IsTHSIndexCode(code) {
+			if raw := strings.TrimSpace(optionalString(args, "adjustFlag", "")); raw != "" && !strings.EqualFold(raw, "none") && raw != "0" {
+				return "", fmt.Errorf(".TI 指数没有复权语义；请省略 --adjust 或使用 --adjust none")
+			}
+			adjustFlag = "none"
 		}
 		mapped["kLineType"] = kLineType
 		mapped["limit"] = optionalInt(args, "limit", 120)

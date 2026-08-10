@@ -96,6 +96,19 @@ stdin 会自动提取 `sz002335`、`sh603690`、`bj430047`、`002335.SZ` 和裸 
 - `GetMutualTop10Deal`: 沪深港通十大成交。
 - `GetEconomicData`, `GetSecuritiesCompanyOpinion`, `GetIndustryValuation`: 宏观、券商观点和行业估值。`IndustryResearch` 是内部研究能力名，当前不在 `tool list` 直连清单中，不能当作 raw tool 调用。
 
+### 指数历史 K 线
+
+优先使用语义化只读命令：
+
+```powershell
+.\go-stock-cli.exe index history --code 883418.TI --start 2025-01-01 --end 2026-08-10
+.\go-stock-cli.exe --json index history --name 微盘股 --start 2025-01-01 --end 2026-08-10
+```
+
+- 支持 `.SH/.SZ/.CSI/.TI`，仅日线、无复权、日期范围包含首尾且最长 10 年。
+- `.TI` 主源为 `ths-finance-api`；`ths-public-web` 是未文档化兼容兜底，必须保留来源标签。
+- `kline show/signals --stock-code 883418.TI` 复用同一数据层；裸 `883418` 仍按北交所股票处理。
+
 ### K线分析 / 形态与指标筛选
 
 优先语义化命令：

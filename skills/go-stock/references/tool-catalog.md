@@ -40,6 +40,9 @@ Get-Content .\watchlist.txt | .\go-stock-cli.exe tool GetStockInfo --stock-code 
 ├─ market billboard/stock-report/announcement/industry-research
 └─ market hot global/cn/hk/us/topic/timeline/calendar
 
+指数数据
+└─ index history
+
 K线分析
 ├─ kline search
 ├─ kline recent
@@ -78,6 +81,8 @@ K线分析
 .\go-stock-cli.exe market news
 .\go-stock-cli.exe market major-index
 .\go-stock-cli.exe market major-index --name 上证指数
+.\go-stock-cli.exe index history --code 883418.TI --start 2025-01-01 --end 2026-08-10
+.\go-stock-cli.exe --json index history --name 微盘股 --start 2025-01-01 --end 2026-08-10
 .\go-stock-cli.exe market industry-rank money --sort netamount --limit 20
 .\go-stock-cli.exe market industry-rank csrc-money --sort netamount --limit 20
 .\go-stock-cli.exe market industry-rank concept-money --sort netamount --limit 20
@@ -89,7 +94,8 @@ K线分析
 .\go-stock-cli.exe tool GetStockLatestFinance --stockCode='sz002335,sz002506,sh603690'
 ```
 
-`market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。恒生、道琼斯、标普500、纳斯达克会在东财 `100.*` 无数据时自动使用 GUI 旧图表同源的腾讯代码兜底；`高端装备` 使用 `930599.CSI`；`VIX恐慌指数` 沿用 GUI 现状，使用 `usUVXY.AM` 作为 UVXY 代理。K 线命令支持 `002335` 这类深市前导 0 代码，不需要强制改成 `sz002335`。
+`market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。恒生、道琼斯、标普500、纳斯达克会在东财 `100.*` 无数据时自动使用 GUI 旧图表同源的腾讯代码兜底；`高端装备` 使用 `930599.CSI`；`微盘股` 使用 `883418.TI`；`VIX恐慌指数` 沿用 GUI 现状，使用 `usUVXY.AM` 作为 UVXY 代理。K 线命令支持 `002335` 这类深市前导 0 代码，不需要强制改成 `sz002335`。
+`index history` 支持 `.SH/.SZ/.CSI/.TI` 指数的指定日期区间日 K，必须传 `start/end`，包含首尾且最长 10 年。`.TI` 优先使用带 `X-api-key` 的 `ths-finance-api`；未配置 Key 或 REST 发生超时、网络错误、429/5xx、损坏/空响应时才允许使用 `ths-public-web`。401/403、业务码 2001/2003 不降级。网页源未文档化，来源标签必须保留。
 `kline show` 和 `kline signals` 对齐 GUI K线复权选择：日K及更长周期默认 `--adjust qfq` 前复权，可传 `--adjust hfq` 后复权或 `--adjust none` 不复权；分钟线忽略复权。
 股票池来自文件、上一条 go-stock 输出或 Agent 生成列表时，用 `--stock-code -` 或 `--stdin` 从管道读取；CLI 会自动提取 `sz002335`、`002335.SZ` 和裸 6 位代码并去重保序。
 
@@ -156,6 +162,7 @@ raw tool 参数和盯盘注意事项：
 | `GetTypeStatsByDate` | 按日期查询异动类型统计。 | 分析某天异动类别分布。 | 日期。 |
 | `QueryIwencai` | 调用同花顺问财自然语言查询。 | 用户提出自然语言市场/股票筛选问题。 | `query` 或自然语言条件。 |
 | `QueryZhishu` | 查询指数相关数据。 | 用户问大盘指数、行业指数、核心指数。 | 指数名称或代码。 |
+| `index history` | CLI 指数历史日 K；JSON 模式在兼容 `output` 外提供结构化 `data.bars`。 | 需要 `.SH/.SZ/.CSI/.TI` 指数指定日期范围的开高低收、成交量和成交额。 | `--code`/`--name` 至少一个；`--start`、`--end` 必填；`--interval` 仅 `1d`；无复权。 |
 | `QueryMacro` | 查询宏观经济数据。 | GDP、CPI、PMI、社融、利率等问题。 | 宏观指标关键词。 |
 | `QueryFutures` | 查询期货/期权相关数据。 | 用户问商品、股指期货、期权行情。 | 品种或条件。 |
 | `QueryStockConnect` | 查询沪深港通、北向/南向资金。 | 分析外资流入、港股通成交。 | 日期、通道类型。 |

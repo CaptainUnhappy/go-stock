@@ -24,6 +24,8 @@ description: Use when an agent needs to work with local go-stock financial data 
 .\go-stock-cli.exe market news
 .\go-stock-cli.exe market major-index
 .\go-stock-cli.exe market major-index --name 上证指数
+.\go-stock-cli.exe index history --code 883418.TI --start 2025-01-01 --end 2026-08-10
+.\go-stock-cli.exe --json index history --name 微盘股 --start 2025-01-01 --end 2026-08-10
 .\go-stock-cli.exe market industry-rank concept-money --sort netamount --limit 20
 .\go-stock-cli.exe market money-flow stock --sort r0_net --limit 20
 .\go-stock-cli.exe kline show --stock-code 002335 --k-line-type day --adjust qfq --limit 120
@@ -52,6 +54,7 @@ JSON 输出：
 ```text
 GO_STOCK_DB=可选；不设置时默认读取系统用户目录下的 go-stock/data/stock.db
 GO_STOCK_CLI_VERBOSE=true；可选，打开 CLI 调试日志
+THS_FINANCE_API_KEY=可选；同花顺金融数据 REST 密钥，优先于数据库设置
 ```
 
 默认直接使用仓库根目录的 `go-stock-cli.exe`。如果 exe 不存在或需要更新，先运行 `.\scripts\build-windows.ps1` 重新打包；只有源码调试或 exe 缺失时才使用 `.\scripts\go-stock-cli.ps1` 备用包装器，它会把 Go 构建缓存放到仓库 `.gocache`。
@@ -72,7 +75,9 @@ skills/go-stock/references/tool-catalog.md
 - GUI 主树没有覆盖但归档工具层有的能力，用 `tool list` -> `tool info` -> `tool 工具名`。盯盘优先用 `tool GetStockInfo`，它包含五档盘口概览；`GetStockOrderBook` 只作为专用盘口补充工具。
 - 股票参数默认使用 CLI 风格 `--stock-code`。多股票可写成 `--stock-code "sz002335,sz002506"`，也可用管道：`Get-Content .\watchlist.txt | .\go-stock-cli.exe tool GetStockInfo --stock-code -`。当接上一条 go-stock 输出时，也可以用 `--stdin` 自动提取代码。
 - 股票名称、简称、拼音或代码不确定时，用 `portfolio search` 或 `kline search` 确认。
-- 市场复盘优先：`market news` -> `market major-index` -> `market money-flow stock` -> `research uplimit`。`market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。恒生、道琼斯、标普500、纳斯达克会在东财 `100.*` 无数据时自动使用 GUI 旧图表同源的腾讯代码兜底；`高端装备` 使用 `930599.CSI`；`VIX恐慌指数` 沿用 GUI 现状，使用 `usUVXY.AM` 作为 UVXY 代理。
+- 市场复盘优先：`market news` -> `market major-index` -> `market money-flow stock` -> `research uplimit`。`market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。恒生、道琼斯、标普500、纳斯达克会在东财 `100.*` 无数据时自动使用 GUI 旧图表同源的腾讯代码兜底；`高端装备` 使用 `930599.CSI`；`微盘股` 使用 `883418.TI`；`VIX恐慌指数` 沿用 GUI 现状，使用 `usUVXY.AM` 作为 UVXY 代理。
+- 指定日期区间的指数日 K 用 `index history`，支持 `.SH/.SZ/.CSI/.TI`、包含首尾日期、最大 10 年。`.TI` 有密钥时优先 `ths-finance-api`，无密钥或仅可降级故障时使用明确标记的 `ths-public-web`；网页源是未文档化兼容兜底，不应被描述为官方 REST。指数不接受复权。
+- 只有显式 `883418.TI` 或名称“微盘股”才按同花顺指数处理；裸 `883418` 仍是北交所股票语义。股票自选、持仓和分组命令拒绝 `.TI`。
 - 个股分析优先：`portfolio view detail` -> `portfolio view daily-k`/`kline show` -> `portfolio view money` -> `portfolio view notice`/`portfolio view report`。
 - 资金流按 GUI 对齐：个股资金 9 标签用 `market money-flow stock` 的 `sort` 参数；板块资金用 `market money-flow bk ...`；概念资金用 `market money-flow concept ...`。
 - 基金使用 `fund follow` 和 `fund ranking`；基金搜索、详情、K线、净值、持仓分别用 `fund search/info/kline/nav/holdings`。
@@ -127,6 +132,7 @@ skills/go-stock/references/tool-catalog.md
 | 查板块/行业字典 | `QueryBKDictInfo` | 获取板块、行业、概念名称和代码。 |
 | 看市场全貌 | `GetMarketData` | 市场指数、涨跌分布、新股申购等总览。 |
 | 看全球指数 | `GetGlobalMarketStatus` | 全球主要股指行情和开盘状态。 |
+| 查指数区间日 K | `index history` | 查询 `.SH/.SZ/.CSI/.TI` 指数指定日期范围 OHLC、成交量和成交额；JSON 输出含结构化 `data.bars`。 |
 | 查行业涨幅排名 | `GetIndustryRank` | 对应“行业排名 > 行业涨幅排名”。 |
 | 看个股行情 | `GetStockInfo` | 个股实时行情，涨跌按昨收计算，并附带盘口、带单位的成交量/成交额、换手率、量比、PE/PB、市值等可得字段。 |
 | 看盘口/封单 | `GetStockInfo` | 盯盘优先工具，包含行情和五档盘口概览；`GetStockOrderBook` 仅作专用补充。 |

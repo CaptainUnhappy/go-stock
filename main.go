@@ -85,6 +85,9 @@ func main() {
 	data.SponsorDecryptKeyHex = BuildKey
 	data.SetAppIcon(icon)
 	db.Init(paths.DBPath)
+	if err := data.EnsureSettingsSchema(); err != nil {
+		log.SugaredLogger.Fatalf("migrate settings schema failed: %v", err)
+	}
 	data.InitAnalyzeSentiment()
 	go AutoMigrate()
 
@@ -280,7 +283,6 @@ func AutoMigrate() {
 	db.Dao.AutoMigrate(&data.StockBasic{})
 	db.Dao.AutoMigrate(&data.FollowedStock{})
 	db.Dao.AutoMigrate(&data.IndexBasic{})
-	db.Dao.AutoMigrate(&data.Settings{})
 	db.Dao.AutoMigrate(&models.AIResponseResult{})
 	db.Dao.AutoMigrate(&models.StockInfoHK{})
 	db.Dao.AutoMigrate(&models.StockInfoUS{})

@@ -153,6 +153,9 @@ func validateFollowedStockPositionInput(input followedStockPositionInput) error 
 	if strings.TrimSpace(input.StockCode) == "" {
 		return fmt.Errorf("stockCode 不能为空")
 	}
+	if data.IsTHSIndexCode(input.StockCode) {
+		return fmt.Errorf("%s 是同花顺指数代码，股票持仓设置不接受 .TI 指数", strings.ToUpper(strings.TrimSpace(input.StockCode)))
+	}
 	if input.CostPrice <= 0 {
 		return fmt.Errorf("costPrice 必须大于 0")
 	}

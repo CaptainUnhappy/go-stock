@@ -133,7 +133,7 @@ func handleGetEastMoneyKLine(o *OpenAi, funcArguments string, ctx *ToolContext) 
 	kType := normalizeKLineType(kLineType)
 	res := parallelStockToolSections(codes, func(stockCode string) string {
 		// A股优先使用 FetchKLineWithFallback（MAC→东方财富→新浪→腾讯→通达信）
-		if IsAStockCode(stockCode) {
+		if IsAStockCode(stockCode) || IsTHSIndexCode(stockCode) {
 			return FetchKLineWithFallbackAsSection(stockCode, kType, limit, adjustFlag)
 		}
 		api := NewEastMoneyKLineApi(GetSettingConfig())
@@ -282,7 +282,7 @@ func handleGetEastMoneyKLineWithMA(o *OpenAi, funcArguments string, ctx *ToolCon
 
 	res := parallelStockToolSections(codes, func(stockCode string) string {
 		// A股优先使用 FetchKLineWithFallback + 均线计算
-		if IsAStockCode(stockCode) {
+		if IsAStockCode(stockCode) || IsTHSIndexCode(stockCode) {
 			return FetchKLineWithMASection(stockCode, normalizeKLineType(kLineType), limit, maPeriodsStr, adjustFlag)
 		}
 		api := NewEastMoneyKLineApi(GetSettingConfig())
@@ -337,6 +337,25 @@ func IsCSIIndexCode(code string) bool {
 	return strings.HasSuffix(strings.ToUpper(code), ".CSI")
 }
 
+// IsTHSIndexCode identifies explicit Tonghuashun index symbols. Bare six-digit
+// values intentionally remain stock codes (for example 883418 remains a BJ stock).
+func IsTHSIndexCode(code string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(code))
+	if !strings.HasSuffix(upper, ".TI") {
+		return false
+	}
+	digits := strings.TrimSuffix(upper, ".TI")
+	if len(digits) != 6 {
+		return false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // IsGlobalIndexCode 判断代码是否为海外指数（100.XXX 前缀，如 100.DJIA 道琼斯/100.SPX 标普500/100.NDX 纳斯达克/100.HSI 恒生）。
 // 东方财富 secid 前缀 100 = 海外指数，代码为字母（DJIA/SPX/NDX/HSI），convertStockCode 原样返回即为有效 secid。
 // MAC 主客户端不识别此类代码（tdxMarketFromStockCode 会落入 default 返回 MarketSH，
@@ -369,6 +388,9 @@ func NormalizeKLineType(s string) string {
 func FetchKLineWithFallbackAsSection(stockCode, klt string, limit int, adjustFlag ...string) string {
 	kType := normalizeKLineType(klt)
 	fallbackResult := FetchKLineWithFallback(stockCode, "", kType, limit, "", adjustFlagFromVariadic(adjustFlag...))
+	if strings.TrimSpace(fallbackResult.Error) != "" {
+		return stockCode + "：" + fallbackResult.Error
+	}
 	if fallbackResult.Data == nil || len(*fallbackResult.Data) == 0 {
 		return stockCode + "：未获取到 K 线数据，请检查股票代码与类型。"
 	}
@@ -405,6 +427,9 @@ func FetchKLineWithFallbackAsSection(stockCode, klt string, limit int, adjustFla
 func FetchKLineWithMASection(stockCode, klt string, limit int, maPeriodsStr string, adjustFlag ...string) string {
 	kType := normalizeKLineType(klt)
 	fallbackResult := FetchKLineWithFallback(stockCode, "", kType, limit, "", adjustFlagFromVariadic(adjustFlag...))
+	if strings.TrimSpace(fallbackResult.Error) != "" {
+		return stockCode + "：" + fallbackResult.Error
+	}
 	if fallbackResult.Data == nil || len(*fallbackResult.Data) == 0 {
 		return stockCode + "：未获取到带均线的 K 线数据，请检查股票代码与参数。"
 	}

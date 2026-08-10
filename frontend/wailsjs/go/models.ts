@@ -1195,8 +1195,9 @@ export namespace data {
 	    httpProxyEnabled: boolean;
 	    enableAgent: boolean;
 	    qgqpBId: string;
-	    iwencaiApiKey: string;
-	    emApiKey: string;
+		    iwencaiApiKey: string;
+		    emApiKey: string;
+		    thsFinanceApiKey: string;
 	    windowWidth: number;
 	    windowHeight: number;
 	    promptPlazaApiBase: string;
@@ -1250,7 +1251,8 @@ export namespace data {
 	        this.enableAgent = source["enableAgent"];
 	        this.qgqpBId = source["qgqpBId"];
 	        this.iwencaiApiKey = source["iwencaiApiKey"];
-	        this.emApiKey = source["emApiKey"];
+		        this.emApiKey = source["emApiKey"];
+		        this.thsFinanceApiKey = source["thsFinanceApiKey"];
 	        this.windowWidth = source["windowWidth"];
 	        this.windowHeight = source["windowHeight"];
 	        this.promptPlazaApiBase = source["promptPlazaApiBase"];

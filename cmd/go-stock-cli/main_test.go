@@ -183,3 +183,16 @@ func TestParseValueStillParsesPlainNumbers(t *testing.T) {
 		t.Fatalf("parseValue(2335) = %#v, want int64 2335", got)
 	}
 }
+
+func TestParseArgsIndexHistory(t *testing.T) {
+	req, _, err := parseArgs([]string{"--json", "index", "history", "--code", "883418.TI", "--start", "2025-01-01", "--end", "2026-08-10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.CommandPath != "index history" || req.Format != "json" {
+		t.Fatalf("request = %+v", req)
+	}
+	if req.Args["code"] != "883418.TI" || req.Args["start"] != "2025-01-01" || req.Args["end"] != "2026-08-10" {
+		t.Fatalf("args = %#v", req.Args)
+	}
+}

@@ -35,6 +35,9 @@ func main() {
 		log.Fatal("resolve go-stock database path failed")
 	}
 	db.Init(dbPath)
+	if err := data.EnsureSettingsSchema(); err != nil {
+		log.Fatalf("migrate settings schema: %v", err)
+	}
 	data.InitAnalyzeSentiment()
 
 	runner, err := stockcli.NewRunner()

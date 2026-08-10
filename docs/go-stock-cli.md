@@ -19,6 +19,7 @@
 ```text
 GO_STOCK_DB=可选；不设置时默认读取系统用户目录下的 go-stock/data/stock.db
 GO_STOCK_CLI_VERBOSE=true；打开 CLI 调试日志，默认关闭以避免污染 stdout
+THS_FINANCE_API_KEY=可选；同花顺金融数据 REST 密钥，优先于设置表中的 thsFinanceApiKey
 ```
 
 输出格式：
@@ -59,6 +60,8 @@ stdin 提取规则支持 `sz002335`、`sh603690`、`bj430047`、`002335.SZ` 和�
 .\go-stock-cli.exe market news
 .\go-stock-cli.exe market major-index
 .\go-stock-cli.exe market major-index --name 上证指数
+.\go-stock-cli.exe index history --code 883418.TI --start 2025-01-01 --end 2026-08-10
+.\go-stock-cli.exe --json index history --name 微盘股 --start 2025-01-01 --end 2026-08-10
 .\go-stock-cli.exe market industry-rank concept-money --sort netamount --limit 20
 .\go-stock-cli.exe market money-flow stock --sort r0_net --limit 20
 .\go-stock-cli.exe portfolio list
@@ -72,7 +75,15 @@ stdin 提取规则支持 `sz002335`、`sh603690`、`bj430047`、`002335.SZ` 和�
 .\go-stock-cli.exe calendar next-trading-day --date 2026-07-03
 ```
 
-`market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。恒生、道琼斯、标普500、纳斯达克会在东财 `100.*` 无数据时自动使用 GUI 旧图表同源的腾讯代码兜底；`高端装备` 使用 `930599.CSI`；`VIX恐慌指数` 沿用 GUI 现状，使用 `usUVXY.AM` 作为 UVXY 代理。
+`market major-index` 不带参数时返回适合盯盘的市场总览；传 `--name` 或 `--code` 时查询单个指数 K 线。恒生、道琼斯、标普500、纳斯达克会在东财 `100.*` 无数据时自动使用 GUI 旧图表同源的腾讯代码兜底；`高端装备` 使用 `930599.CSI`；`微盘股` 使用 `883418.TI`；`VIX恐慌指数` 沿用 GUI 现状，使用 `usUVXY.AM` 作为 UVXY 代理。
+
+### 指数历史 K 线
+
+`index history` 是只读区间查询，支持 `.SH`、`.SZ`、`.CSI`、`.TI`。`--code` 与 `--name` 至少提供一个；两者同时提供时必须指向同一指数。`--start`、`--end` 必填，格式 `YYYY-MM-DD`，包含首尾且最大跨度 10 年；`--interval` 当前仅允许 `1d`。指数没有复权语义，传复权参数会报错。
+
+`.TI` 数据有 Key 时优先来自同花顺金融数据 REST（`ths-finance-api`）。可在设置页填写 `thsFinanceApiKey`，或用优先级更高的 `THS_FINANCE_API_KEY` 环境变量。未配置 Key 时自动使用 `ths-public-web`；后者是未文档化网页年度行情兼容源，输出会明确标记，协议变化时直接失败。REST 的 401/403、业务码 2001/2003 等鉴权/权限错误不会用网页数据掩盖；仅网络、超时、429/5xx、损坏或空响应可降级。
+
+JSON 模式保留原有 `output`，同时新增 `data`，其中 `data.bars` 提供数值型 `date/open/high/low/close/volume/amount/partial`。只有显式 `883418.TI` 或名称“微盘股”按同花顺指数处理；裸 `883418` 仍按北交所代码解析。股票自选、持仓、分组命令明确拒绝 `.TI`。
 
 `calendar` 是独立交易日历入口：`calendar now` 查当前时间，`calendar is-trading-day --date YYYY-MM-DD` 判断 A 股交易日，`calendar next-trading-day --date YYYY-MM-DD` 查下一交易日，`calendar holiday/year/batch` 查节假日。
 

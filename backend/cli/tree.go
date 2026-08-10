@@ -19,6 +19,7 @@ func CommandTree() TreeNode {
 		Children: []TreeNode{
 			portfolioTree(),
 			marketTree(),
+			indexTree(),
 			klineTree(),
 			fundTree(),
 			calendarTree(),
@@ -45,6 +46,8 @@ func RenderHelp() string {
 	b.WriteString(".\\go-stock-cli.exe market news\n")
 	b.WriteString(".\\go-stock-cli.exe market major-index\n")
 	b.WriteString(".\\go-stock-cli.exe market major-index --name 上证指数\n")
+	b.WriteString(".\\go-stock-cli.exe index history --code 883418.TI --start 2025-01-01 --end 2026-08-10\n")
+	b.WriteString(".\\go-stock-cli.exe --json index history --name 微盘股 --start 2025-01-01 --end 2026-08-10\n")
 	b.WriteString(".\\go-stock-cli.exe market industry-rank concept-money --sort netamount --limit 20\n")
 	b.WriteString(".\\go-stock-cli.exe market money-flow stock --sort r0_net --limit 20\n")
 	b.WriteString(".\\go-stock-cli.exe kline show --stock-code 002335 --k-line-type day --adjust qfq --limit 120\n")
@@ -212,6 +215,15 @@ func klineTree() TreeNode {
 		{Label: "指标信号汇总", Path: "kline signals", Children: []TreeNode{
 			{Label: "看多/看空/震荡/中性统计"},
 			{Label: "指标标签：MA/MACD/RSI/KDJ/BOLL 等"},
+		}},
+	}}
+}
+
+func indexTree() TreeNode {
+	return TreeNode{Label: "指数数据", Children: []TreeNode{
+		{Label: "指定日期区间日 K 线（.SH/.SZ/.CSI/.TI）", Path: "index history", Children: []TreeNode{
+			{Label: "日期范围包含首尾，最大 10 年"},
+			{Label: "周期：仅 1d；指数不复权"},
 		}},
 	}}
 }

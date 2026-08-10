@@ -30,6 +30,7 @@ const formValue = ref({
   tushareToken: '',
   iwencaiApiKey: '',
   emApiKey: '',
+  thsFinanceApiKey: '',
   dingPush: {
     enable: false,
     dingRobot: ''
@@ -100,6 +101,7 @@ onMounted(() => {
     formValue.value.tushareToken = res.tushareToken
     formValue.value.iwencaiApiKey = res.iwencaiApiKey || ''
     formValue.value.emApiKey = res.emApiKey || ''
+    formValue.value.thsFinanceApiKey = res.thsFinanceApiKey || ''
     formValue.value.dingPush = {
       enable: res.dingPushEnable,
       dingRobot: res.dingRobot
@@ -164,7 +166,6 @@ onBeforeUnmount(() => {
 })
 
 function saveConfig() {
-  console.log('开始保存设置', formValue.value);
   // AI 模型服务配置已迁移到独立页面，此处不传 aiConfigs（后端收到 nil 保留现有配置，避免覆盖）
   let config = new data.SettingConfig({
     ID: formValue.value.ID,
@@ -188,6 +189,7 @@ function saveConfig() {
     tushareToken: formValue.value.tushareToken,
     iwencaiApiKey: formValue.value.iwencaiApiKey,
     emApiKey: formValue.value.emApiKey,
+    thsFinanceApiKey: formValue.value.thsFinanceApiKey,
     prompt: formValue.value.openAI.prompt,
     questionTemplate: formValue.value.openAI.questionTemplate,
     crawlTimeOut: formValue.value.openAI.crawlTimeOut,
@@ -373,6 +375,7 @@ function importConfig() {
       formValue.value.tushareToken = config.tushareToken
       formValue.value.iwencaiApiKey = config.iwencaiApiKey || ''
       formValue.value.emApiKey = config.emApiKey || ''
+      formValue.value.thsFinanceApiKey = config.thsFinanceApiKey || ''
       formValue.value.dingPush = {
         enable: config.dingPushEnable,
         dingRobot: config.dingRobot
@@ -604,6 +607,25 @@ function deletePrompt(ID) {
                     访问东方财富妙想AI平台获取API Key。
                     https://ai.eastmoney.com/mxClaw<br>
                     配置后可使用个股业绩点评功能。
+                  </div>
+                  </n-gradient-text>
+                </template>
+              </n-tooltip>
+            </n-form-item-gi>
+
+            <n-form-item-gi :span="11" label="同花顺金融数据密钥：" path="thsFinanceApiKey">
+              <n-input type="password" placeholder="同花顺金融数据 API Key" v-model:value="formValue.thsFinanceApiKey" clearable show-password-on="click"/>
+              <n-tooltip placement="top">
+                <template #trigger>
+                  <n-icon color="#0e7a0d" size="20">
+                    <HelpCircleFilledIcon />
+                  </n-icon>
+                </template>
+                <template #default>
+                  <n-gradient-text :type="'warning'">
+                  <div style="max-width: 400px;text-align: left">
+                    访问同花顺金融数据 API Key 管理页签发密钥。<br>
+                    用于指数历史 K 线；环境变量 THS_FINANCE_API_KEY 的优先级更高。
                   </div>
                   </n-gradient-text>
                 </template>
