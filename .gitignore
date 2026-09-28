@@ -129,6 +129,7 @@ frontend/package.json.md5
 # Local backup/output artifacts
 backups/
 outputs/
+/output/
 /build/releases/
 __pycache__/
 scripts/__pycache__/
