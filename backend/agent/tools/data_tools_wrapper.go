@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"go-stock/backend/data"
@@ -23,12 +24,46 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// MaybeVectorizeStockBasicInfoFn 由 agent 包注入，用于在调用 GetStockOrgBasicInfo 工具后
+// 自动将基础资料向量化到"A股基础数据"知识库。为 nil 时跳过（避免 tools→agent 循环依赖）。
+// 保留以兼容旧调用方；新调用方应使用 MaybeVectorizeStockDataFn。
+var MaybeVectorizeStockBasicInfoFn func(stockCode, content string)
+
+// MaybeVectorizeStockDataFn 由 agent 包注入，用于将多种"不经常变化"的 F10 数据
+// （公司基础资料、季度财务、机构预测明细/汇总、户均持股趋势等）自动向量化到"A股基础数据"
+// 知识库。所有数据类型共用同一 KB，通过 sourceKey 前缀区分类型并按 sourceKey 去重。
+//   - sourceKey: 全局唯一的去重标记，建议格式 "<typePrefix>:<normalizedStockCode>"
+//   - content: 文档内容（Markdown）
+//   - dataType: 数据类型描述，写入 metadata 的 type 字段
+//
+// 为 nil 时跳过（避免 tools→agent 循环依赖）。
+var MaybeVectorizeStockDataFn func(sourceKey, content, dataType string)
+
+// normalizeStockCodeForVector 归一化股票代码（去除 .SH/.SZ/.BJ 后缀与 sh/sz/bj 前缀，转大写）。
+// 逻辑与 agent.normalizeStockCodeForKB 保持一致；因 tools 包不能 import agent，故在此重复实现。
+func normalizeStockCodeForVector(code string) string {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return ""
+	}
+	upper := strings.ToUpper(code)
+	for _, suffix := range []string{".SH", ".SZ", ".BJ"} {
+		upper = strings.TrimSuffix(upper, suffix)
+	}
+	for _, prefix := range []string{"SH", "SZ", "BJ"} {
+		upper = strings.TrimPrefix(upper, prefix)
+	}
+	return upper
+}
+
 // AgentMeta 封装一次 Agent 会话的元信息，用于在工具调用时注入实际使用的模型名与提示词。
 // 通过 context.WithValue 传递，由 agent 层在 ChatWithContext 中注入，工具 InvokableRun 中提取。
 type AgentMeta struct {
 	ModelName    string
 	SystemPrompt string
 	UserPrompt   string
+	SysPromptId  int    // 系统提示词模板 ID（0=内置默认提示词），供推荐记录快照回测分组
+	SkillId      string // 用户显式选择的技能目录名（逗号分隔；空=未使用技能），供推荐记录快照按技能回测分组
 }
 
 type agentMetaCtxKey struct{}
@@ -42,6 +77,32 @@ func WithAgentMeta(ctx context.Context, meta AgentMeta) context.Context {
 func AgentMetaFromCtx(ctx context.Context) (AgentMeta, bool) {
 	meta, ok := ctx.Value(agentMetaCtxKey{}).(AgentMeta)
 	return meta, ok
+}
+
+// recommendSavedFlag 本轮是否已通过推荐工具保存过推荐记录。
+// context.WithValue 存指针使其可变：工具 InvokableRun 置位，agent 收尾处读取。
+type recommendSavedFlag struct {
+	v atomic.Bool
+}
+
+type recommendSavedCtxKey struct{}
+
+// WithRecommendSavedTracker 注入本轮推荐保存跟踪器（每轮 ChatWithContext 调用一次）。
+func WithRecommendSavedTracker(ctx context.Context) context.Context {
+	return context.WithValue(ctx, recommendSavedCtxKey{}, &recommendSavedFlag{})
+}
+
+// MarkRecommendSaved 标记本轮已通过推荐工具保存推荐记录；未注入跟踪器时为空操作。
+func MarkRecommendSaved(ctx context.Context) {
+	if f, ok := ctx.Value(recommendSavedCtxKey{}).(*recommendSavedFlag); ok {
+		f.v.Store(true)
+	}
+}
+
+// RecommendSavedThisTurn 本轮是否已通过推荐工具保存过推荐记录。
+func RecommendSavedThisTurn(ctx context.Context) bool {
+	f, ok := ctx.Value(recommendSavedCtxKey{}).(*recommendSavedFlag)
+	return ok && f.v.Load()
 }
 
 type DataToolWrapper struct {
@@ -61,6 +122,7 @@ func NewDataToolWrapper(name, description string, params map[string]*schema.Para
 }
 
 func (t *DataToolWrapper) Info(ctx context.Context) (*schema.ToolInfo, error) {
+	// 保持工具描述与参数描述完整原样返回，不做精简裁剪（保留原始语义供模型选择工具）。
 	return &schema.ToolInfo{
 		Name:        t.name,
 		Desc:        t.description,
@@ -72,13 +134,24 @@ func (t *DataToolWrapper) InvokableRun(ctx context.Context, argumentsInJSON stri
 	logger.SugaredLogger.Infof("Tool %s called with args: %s", t.name, argumentsInJSON)
 	// 对股票推荐工具，用实际模型名覆盖并注入系统/用户提示词
 	if t.name == "CreateAiRecommendStocks" || t.name == "BatchCreateAiRecommendStocks" {
+		// 标记本轮已通过工具保存推荐记录：收尾的回复自动保存据此跳过，避免重复入库
+		MarkRecommendSaved(ctx)
 		if meta, ok := AgentMetaFromCtx(ctx); ok {
 			if injected := injectRecommendMeta(t.name, argumentsInJSON, meta); injected != "" {
 				argumentsInJSON = injected
 			}
 		}
 	}
-	return t.handler(argumentsInJSON)
+	// 缓存命中检查（写操作/未配置 TTL 的工具跳过）
+	if cached, ok := getCachedToolResult(t.name, argumentsInJSON); ok {
+		logger.SugaredLogger.Infof("Tool %s cache hit, args=%s", t.name, argumentsInJSON)
+		return cached, nil
+	}
+	result, err := t.handler(argumentsInJSON)
+	if err == nil {
+		setCachedToolResult(t.name, argumentsInJSON, result)
+	}
+	return result, err
 }
 
 func stockInfoChange(s data.StockInfo) (price, preClose, change, changePercent float64) {
@@ -344,6 +417,8 @@ func injectRecommendMeta(toolName, argsJSON string, meta AgentMeta) string {
 		rec.ModelName = meta.ModelName
 		rec.SystemPrompt = meta.SystemPrompt
 		rec.UserPrompt = meta.UserPrompt
+		rec.SysPromptId = meta.SysPromptId
+		rec.SkillId = meta.SkillId
 	}
 
 	if toolName == "BatchCreateAiRecommendStocks" {
@@ -723,7 +798,7 @@ func GetAllDataTools() []tool.BaseTool {
 	))
 	tools = append(tools, NewDataToolWrapper(
 		"SearchStockByIndicators",
-		"根据自然语言筛选股票。可以使用K线形态、技术指标、财务指标等条件选股。可以查询股票常用的指标，如均线，kdj,rsi,boll，macd等。",
+		"根据自然语言筛选股票。可以使用K线形态、技术指标、财务指标等条件选股。可以查询股票常用的指标，如均线，kdj,rsi,boll，macd等。\n\n调用示例：SearchStockByIndicators(words=\"macd金叉 且 kdj超卖 且 市盈率小于30\")\n返回格式：### 工具筛选出的相关股票数据：\\n| <动态列名> | ... |\\n（列名由同花顺接口按筛选条件返回，通常含股票代码、名称、价格等）",
 		map[string]*schema.ParameterInfo{
 			"words": {
 				Type:     "string",
@@ -3302,24 +3377,26 @@ func GetAllDataTools() []tool.BaseTool {
 
 	tools = append(tools, NewDataToolWrapper(
 		"GetLongTigerList",
-		"获取龙虎榜数据（营业部排行榜）",
+		"获取龙虎榜数据（营业部排行榜）。龙虎榜在交易日收盘后约17点发布，查询当日须在17点后，17点前或非交易日请传最近一个已发布的交易日期",
 		map[string]*schema.ParameterInfo{
 			"date": {
 				Type:     "string",
-				Desc:     "查询日期，格式：2026-03-28",
+				Desc:     "交易日期，格式：2026-03-28。龙虎榜收盘后约17点发布，17点前查当日会无数据，应传上一交易日",
 				Required: true,
 			},
 		},
 		func(args string) (string, error) {
 			date := gjson.Get(args, "date").String()
 			if date == "" {
-				date = time.Now().Format("2006-01-02")
+				date = data.LatestLhbTradeDate()
 			}
 			longTigerData := data.NewMarketNewsApi().LongTiger(date)
 			if longTigerData == nil || len(*longTigerData) == 0 {
-				return "当日暂无龙虎榜数据", nil
+				// 带上数据日期，避免 AI 误以为是其他日期无数据
+				return fmt.Sprintf("%s 龙虎榜数据：当日暂无数据（龙虎榜于交易日收盘后约17点发布，非交易日或17点前查询会无数据）", date), nil
 			}
 			type longTigerRow struct {
+				TradeDate    string  `md:"交易日期"`
 				Rank         int     `md:"排名"`
 				Code         string  `md:"股票代码"`
 				Name         string  `md:"股票名称"`
@@ -3337,7 +3414,13 @@ func GetAllDataTools() []tool.BaseTool {
 				changeRate, _ := convertor.ToFloat(item.CHANGERATE)
 				bizNetAmt, _ := convertor.ToFloat(item.BILLBOARDNETAMT)
 				turnoverRate, _ := convertor.ToFloat(item.TURNOVERRATE)
+				// TRADE_DATE 形如 "2026-09-08 00:00:00"，取日期部分；缺失时回退查询日期
+				tradeDate := strings.TrimSpace(strings.Split(item.TRADEDATE, " ")[0])
+				if tradeDate == "" {
+					tradeDate = date
+				}
 				rows = append(rows, longTigerRow{
+					TradeDate:    tradeDate,
 					Rank:         i + 1,
 					Code:         item.SECURITYCODE,
 					Name:         item.SECURITYNAMEABBR,
@@ -3348,6 +3431,207 @@ func GetAllDataTools() []tool.BaseTool {
 				})
 			}
 			return util.MarkdownTableWithTitle(date+" 龙虎榜数据", rows), nil
+		},
+	))
+
+	tools = append(tools, NewDataToolWrapper(
+		"GetLhbSeatDetail",
+		"获取个股某交易日龙虎榜买5卖5席位明细（游资/机构买卖数据），含营业部名称、买卖金额、占总成交比例、席位类型识别（机构专用/北向通道/知名游资/普通营业部）及游资昵称标签。数据来源于东方财富数据中心。龙虎榜在交易日收盘后约17点发布，查询当日须在17点后，17点前或非交易日请传最近一个已发布的交易日期",
+		map[string]*schema.ParameterInfo{
+			"stockCode": {
+				Type:     "string",
+				Desc:     "股票代码，如 600519、000001.SZ",
+				Required: true,
+			},
+			"date": {
+				Type:     "string",
+				Desc:     "交易日期，格式：2026-03-28。龙虎榜收盘后约17点发布，17点前查当日会无数据，应传上一交易日",
+				Required: true,
+			},
+		},
+		func(args string) (string, error) {
+			stockCode := gjson.Get(args, "stockCode").String()
+			if stockCode == "" {
+				return "请输入股票代码", nil
+			}
+			date := gjson.Get(args, "date").String()
+			return data.NewLhbSeatApi().GetLhbSeatDetailToMarkdown(stockCode, date), nil
+		},
+	))
+
+	tools = append(tools, NewDataToolWrapper(
+		"GetBkFundFlowRank",
+		"获取板块/概念资金流向主力净流入排名TOP榜（如板块/概念资金流入流出前20名）。支持行业板块与概念板块、净流入榜与净流出榜；查询当天资金流向、板块轮动、主力资金动向时使用。返回板块代码与名称，可用 GetBkConstituentStocks 进一步查看成分股",
+		map[string]*schema.ParameterInfo{
+			"boardType": {
+				Type:     "string",
+				Desc:     "板块类型：industry=行业板块（默认），concept=概念板块，both=两者都查",
+				Required: false,
+			},
+			"direction": {
+				Type:     "string",
+				Desc:     "方向：inflow=净流入榜，outflow=净流出榜，both=流入流出都查（默认）",
+				Required: false,
+			},
+			"date": {
+				Type:     "string",
+				Desc:     "查询日期，格式：2026-09-08，为空取最新快照（非交易日自动回退最近交易日）",
+				Required: false,
+			},
+			"topN": {
+				Type:     "number",
+				Desc:     "返回条数，默认20，最大100",
+				Required: false,
+			},
+		},
+		func(args string) (string, error) {
+			boardType := gjson.Get(args, "boardType").String()
+			direction := gjson.Get(args, "direction").String()
+			date := gjson.Get(args, "date").String()
+			topN := gjson.Get(args, "topN").Int()
+			return data.GetBkFundFlowRankToMarkdown(boardType, date, direction, int(topN)), nil
+		},
+	))
+
+	tools = append(tools, NewDataToolWrapper(
+		"GetBkConstituentStocks",
+		"获取板块/概念的成分股列表TOP N，支持按涨跌幅、量比、换手率、总市值、流通市值、主力净流入、主力净流入占比、成交额升序/降序排序（如某板块主力净流入前20的成分股、板块内涨幅榜/换手率榜/市值龙头）。输入板块代码（BK0475，可从 GetBkFundFlowRank 获取）或名称（如 银行、机器人概念）",
+		map[string]*schema.ParameterInfo{
+			"bkCodeOrName": {
+				Type:     "string",
+				Desc:     "板块/概念代码或名称，如 BK0475、银行、机器人概念",
+				Required: true,
+			},
+			"sortBy": {
+				Type:     "string",
+				Desc:     "排序字段：mainNetInflow=主力净流入（默认）、changePercent=涨跌幅、volumeRatio=量比、turnoverRate=换手率、totalMarketCap=总市值、flowMarketCap=流通市值、mainNetInflowPct=主力净流入占比、dealAmount=成交额",
+				Required: false,
+			},
+			"order": {
+				Type:     "string",
+				Desc:     "排序方向：desc=降序（默认）、asc=升序",
+				Required: false,
+			},
+			"topN": {
+				Type:     "number",
+				Desc:     "返回条数，默认20，最大50",
+				Required: false,
+			},
+		},
+		func(args string) (string, error) {
+			bkCodeOrName := gjson.Get(args, "bkCodeOrName").String()
+			if bkCodeOrName == "" {
+				return "请输入板块/概念代码或名称", nil
+			}
+			sortBy := gjson.Get(args, "sortBy").String()
+			order := gjson.Get(args, "order").String()
+			topN := gjson.Get(args, "topN").Int()
+			return data.GetBkConstituentStocksToMarkdown(bkCodeOrName, sortBy, order, int(topN)), nil
+		},
+	))
+
+	tools = append(tools, NewDataToolWrapper(
+		"GetPolicyNewsList",
+		"获取政府部门最新政策新闻列表（数据来自各部委官网，如发改委/央行/证监会/财政部等82个部门，按日期倒序去重）。支持按部门名称或关键词过滤（如 能源/数据/证监会），也可按关键词检索已入库的历史政策标题。分析政策利好利空、行业影响、政策动向时使用",
+		map[string]*schema.ParameterInfo{
+			"department": {
+				Type:     "string",
+				Desc:     "部门名称或关键词：支持部门全名（如 国家能源局）及名称关键词（如 能源 命中 国家能源局，数据 命中 国家数据局），为空则聚合全部部门",
+				Required: false,
+			},
+			"keyword": {
+				Type:     "string",
+				Desc:     "标题关键词，如 新能源/人工智能/房地产，非空时检索已入库历史政策",
+				Required: false,
+			},
+			"limit": {
+				Type:     "number",
+				Desc:     "返回条数，默认20，最大100",
+				Required: false,
+			},
+		},
+		func(args string) (string, error) {
+			department := gjson.Get(args, "department").String()
+			keyword := gjson.Get(args, "keyword").String()
+			limit := gjson.Get(args, "limit").Int()
+			return data.NewPolicyNewsApi().GetPolicyNewsToMarkdown(department, keyword, int(limit)), nil
+		},
+	))
+
+	tools = append(tools, NewDataToolWrapper(
+		"GetPolicyNewsDetail",
+		"获取某条政策新闻的详情全文内容（抓取政策原文页面并提取正文，含标题与原文链接）。输入政策新闻列表（GetPolicyNewsList）或政策文件库检索（SearchGovPolicyLibrary）中返回的链接，用于深入分析具体政策条款、实施时间、适用范围等",
+		map[string]*schema.ParameterInfo{
+			"url": {
+				Type:     "string",
+				Desc:     "政策详情页链接，即 GetPolicyNewsList/SearchGovPolicyLibrary 返回的链接字段（*.gov.cn 域名）",
+				Required: true,
+			},
+		},
+		func(args string) (string, error) {
+			rawurl := gjson.Get(args, "url").String()
+			if rawurl == "" {
+				return "参数 url 不能为空", nil
+			}
+			return data.NewPolicyNewsApi().GetPolicyNewsDetail(rawurl), nil
+		},
+	))
+
+	tools = append(tools, NewDataToolWrapper(
+		"SearchGovPolicyLibrary",
+		"检索国务院政策文件库（sousuo.www.gov.cn 官方权威库，含国务院文件/部门文件/国务院公报等数万份正式政策文件，可查文号、发文机关、发布日期）。支持按发文机关（部门名称或关键词，如 能源/数据局/证监会）过滤。查询国家层面的正式政策文件、红头文件、法律法规原文时优先使用此工具；部委官网的新闻动态用 GetPolicyNewsList",
+		map[string]*schema.ParameterInfo{
+			"keyword": {
+				Type:     "string",
+				Desc:     "检索关键词，如 人工智能/新能源/住房公积金/新质生产力，为空则按发布时间返回最新文件",
+				Required: false,
+			},
+			"department": {
+				Type:     "string",
+				Desc:     "发文机关：支持部门全名（如 商务部）及名称关键词（如 能源 命中 国家能源局，数据 命中 国家数据局）；含国务院时检索国务院本级文件（如 国务院办公厅）。为空则不过滤",
+				Required: false,
+			},
+			"searchField": {
+				Type:     "string",
+				Desc:     "检索字段：title=按标题（默认），content=按正文全文",
+				Required: false,
+			},
+			"category": {
+				Type:     "string",
+				Desc:     "文件类别：gongwen=国务院文件，bumenfile=部门文件，otherfile=其他文件（政策解读等），gongbao=国务院公报；为空合并全部类别",
+				Required: false,
+			},
+			"sortBy": {
+				Type:     "string",
+				Desc:     "排序方式：score=按相关度（默认），pubtime=按发布时间倒序",
+				Required: false,
+			},
+			"page": {
+				Type:     "number",
+				Desc:     "页码，默认 1，用于翻页获取更多结果",
+				Required: false,
+			},
+			"limit": {
+				Type:     "number",
+				Desc:     "每页条数，默认 20，最大 50",
+				Required: false,
+			},
+		},
+		func(args string) (string, error) {
+			keyword := gjson.Get(args, "keyword").String()
+			searchField := gjson.Get(args, "searchField").String()
+			department := gjson.Get(args, "department").String()
+			category := gjson.Get(args, "category").String()
+			sortBy := gjson.Get(args, "sortBy").String()
+			page := gjson.Get(args, "page").Int()
+			limit := gjson.Get(args, "limit").Int()
+			if page < 1 {
+				page = 1
+			}
+			if limit <= 0 {
+				limit = 20
+			}
+			return data.NewGovPolicyLibApi().SearchGovPolicyLibraryToMarkdown(keyword, searchField, department, category, sortBy, int(page), int(limit)), nil
 		},
 	))
 
@@ -5435,6 +5719,7 @@ func GetAllDataTools() []tool.BaseTool {
 		{"GetStockHolderTrend", "获取股票户均持股趋势数据，展示股东户数和户均持股数量随时间的变化趋势。数据来源于东方财富F10。", "股票代码，如 600519、000001.SZ", data.NewStockDataApi().GetStockHolderTrendToMarkdown},
 		{"GetStockBillboard", "获取股票龙虎榜数据，包括上榜日期、上榜原因、买入/卖出总额等。数据来源于东方财富F10。", "股票代码，如 600519、000001.SZ", data.NewStockDataApi().GetStockBillboardToMarkdown},
 		{"GetStockOperationDeptTrade", "获取股票营业部买卖明细，展示各营业部在龙虎榜上的买入/卖出金额和占比。数据来源于东方财富F10。", "股票代码，如 600519、000001.SZ", data.NewStockDataApi().GetStockOperationDeptTradeToMarkdown},
+		{"GetStockOrgBasicInfo", "获取A股上市公司基础资料，包括公司全称/英文名、上市交易所、所属行业(东财/证监会/申万)、董事长/总经理/董秘/法人代表/独立董事/证券事务代表、控股股东及实际控制人持股比例、注册资本、成立/上市日期、发行价、主营业务、经营范围、公司简介、最赚钱产品及毛利率、收入构成、雇员/管理人员人数、联系方式(电话/传真/邮箱/网址/办公地址/注册地址/邮编)、会计师事务所/律师事务所、概念板块/地域板块/所属省份等。数据来源于东方财富F10公司概况(RPT_F10_ORG_BASICINFO)。\n\n调用示例：GetStockOrgBasicInfo(stockCode=\"002008\")\n返回格式：## {股票简称} 公司基础资料\\n| 指标 | 数值 |\\n| --- | --- |\\n| 股票代码 | 002008 |\\n| 公司全称 | ... |\\n... （约 50 个字段平铺为两列表格）", "A股股票代码，如 600519、000001.SZ、002008", data.NewStockDataApi().GetStockOrgBasicInfoToMarkdown},
 	}
 
 	for _, t := range f10Tools {
@@ -5459,7 +5744,27 @@ func GetAllDataTools() []tool.BaseTool {
 				if tool.name == "GetStockLatestFinance" && data.IsHKCodeForRoute(stockCode) {
 					return data.NewStockDataApi().GetHKStockLatestFinanceToMarkdown(stockCode), nil
 				}
-				return tool.handler(stockCode), nil
+				result := tool.handler(stockCode)
+				// "不经常变化"的 F10 数据自动向量化到"A股基础数据"知识库
+				// （已入库则跳过，未入库则后台异步）。所有数据共用同一 KB，通过 sourceKey
+				// 前缀区分类型并去重。每日变化的数据（最新财务/估值百分位/融资融券/大宗交易/
+				// 龙虎榜/营业部买卖）不入库。
+				if MaybeVectorizeStockDataFn != nil {
+					code := normalizeStockCodeForVector(stockCode)
+					switch tool.name {
+					case "GetStockOrgBasicInfo":
+						MaybeVectorizeStockDataFn("basicinfo:"+code, result, "公司基础资料")
+					case "GetStockQtrMainFinance":
+						MaybeVectorizeStockDataFn("qtrfinance:"+code, result, "季度主要财务")
+					case "GetStockOrgPredict":
+						MaybeVectorizeStockDataFn("orgpredict:"+code, result, "机构预测明细")
+					case "GetStockPredictSummary":
+						MaybeVectorizeStockDataFn("predictsummary:"+code, result, "机构预测汇总")
+					case "GetStockHolderTrend":
+						MaybeVectorizeStockDataFn("holdertrend:"+code, result, "户均持股趋势")
+					}
+				}
+				return result, nil
 			},
 		))
 	}
@@ -5508,22 +5813,18 @@ func GetAllDataTools() []tool.BaseTool {
 		map[string]*schema.ParameterInfo{
 			"date": {
 				Type:     "string",
-				Desc:     "查询日期，格式：2026-04-17，默认今天",
+				Desc:     "查询日期，格式：2026-04-17；留空自动回退到最近有数据的交易日（非交易日无数据）",
 				Required: false,
 			},
 		},
 		func(args string) (string, error) {
 			date := gjson.Get(args, "date").String()
-			dataMap, err := fetchUplimitData(date)
+			dataMap, actualDate, err := fetchUplimitData(date)
 			if err != nil {
 				return err.Error(), nil
 			}
-			loc, _ := time.LoadLocation("Asia/Shanghai")
-			if date == "" {
-				date = time.Now().In(loc).Format("2006-01-02")
-			}
 			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("# %s 连板梯队\n\n", date))
+			sb.WriteString(fmt.Sprintf("# %s 连板梯队\n\n", actualDate))
 			if today, _ := dataMap["today"].(bool); today {
 				sb.WriteString("> 数据为实时数据\n\n")
 			}
@@ -5705,22 +6006,18 @@ func GetAllDataTools() []tool.BaseTool {
 		map[string]*schema.ParameterInfo{
 			"date": {
 				Type:     "string",
-				Desc:     "查询日期，格式：2026-04-17，默认今天",
+				Desc:     "查询日期，格式：2026-04-17；留空自动回退到最近有数据的交易日（非交易日无数据）",
 				Required: false,
 			},
 		},
 		func(args string) (string, error) {
 			date := gjson.Get(args, "date").String()
-			dataMap, err := fetchUplimitData(date)
+			dataMap, actualDate, err := fetchUplimitData(date)
 			if err != nil {
 				return err.Error(), nil
 			}
-			loc, _ := time.LoadLocation("Asia/Shanghai")
-			if date == "" {
-				date = time.Now().In(loc).Format("2006-01-02")
-			}
 			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("# %s 热门板块\n\n", date))
+			sb.WriteString(fmt.Sprintf("# %s 热门板块\n\n", actualDate))
 			if today, _ := dataMap["today"].(bool); today {
 				sb.WriteString("> 数据为实时数据\n\n")
 			}
@@ -5776,7 +6073,7 @@ func GetAllDataTools() []tool.BaseTool {
 		map[string]*schema.ParameterInfo{
 			"date": {
 				Type:     "string",
-				Desc:     "查询日期，格式：2026-04-17，默认今天",
+				Desc:     "查询日期，格式：2026-04-17；留空自动回退到最近有数据的交易日（非交易日无数据）",
 				Required: false,
 			},
 			"limit": {
@@ -5791,16 +6088,12 @@ func GetAllDataTools() []tool.BaseTool {
 			if limit <= 0 {
 				limit = 30
 			}
-			dataMap, err := fetchUplimitData(date)
+			dataMap, actualDate, err := fetchUplimitData(date)
 			if err != nil {
 				return err.Error(), nil
 			}
-			loc, _ := time.LoadLocation("Asia/Shanghai")
-			if date == "" {
-				date = time.Now().In(loc).Format("2006-01-02")
-			}
 			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("# %s 个股热度排行\n\n", date))
+			sb.WriteString(fmt.Sprintf("# %s 个股热度排行\n\n", actualDate))
 			if today, _ := dataMap["today"].(bool); today {
 				sb.WriteString("> 数据为实时数据\n\n")
 			}
@@ -5845,22 +6138,18 @@ func GetAllDataTools() []tool.BaseTool {
 		map[string]*schema.ParameterInfo{
 			"date": {
 				Type:     "string",
-				Desc:     "查询日期，格式：2026-04-17，默认今天",
+				Desc:     "查询日期，格式：2026-04-17；留空自动回退到最近有数据的交易日（非交易日无数据）",
 				Required: false,
 			},
 		},
 		func(args string) (string, error) {
 			date := gjson.Get(args, "date").String()
-			dataMap, err := fetchUplimitData(date)
+			dataMap, actualDate, err := fetchUplimitData(date)
 			if err != nil {
 				return err.Error(), nil
 			}
-			loc, _ := time.LoadLocation("Asia/Shanghai")
-			if date == "" {
-				date = time.Now().In(loc).Format("2006-01-02")
-			}
 			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("# %s 炸板股\n\n", date))
+			sb.WriteString(fmt.Sprintf("# %s 炸板股\n\n", actualDate))
 			if today, _ := dataMap["today"].(bool); today {
 				sb.WriteString("> 数据为实时数据\n\n")
 			}
@@ -5910,7 +6199,7 @@ func GetAllDataTools() []tool.BaseTool {
 			},
 			"date": {
 				Type:     "string",
-				Desc:     "查询日期，格式：2026-04-17，默认今天",
+				Desc:     "查询日期，格式：2026-04-17；留空自动回退到最近有数据的交易日（非交易日无数据）",
 				Required: false,
 			},
 		},
@@ -5920,16 +6209,12 @@ func GetAllDataTools() []tool.BaseTool {
 				return "请提供板块名称参数 plate_name", nil
 			}
 			date := gjson.Get(args, "date").String()
-			dataMap, err := fetchUplimitData(date)
+			dataMap, actualDate, err := fetchUplimitData(date)
 			if err != nil {
 				return err.Error(), nil
 			}
-			loc, _ := time.LoadLocation("Asia/Shanghai")
-			if date == "" {
-				date = time.Now().In(loc).Format("2006-01-02")
-			}
 			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("# %s 板块【%s】涨停股详情\n\n", date, plateName))
+			sb.WriteString(fmt.Sprintf("# %s 板块【%s】涨停股详情\n\n", actualDate, plateName))
 			if today, _ := dataMap["today"].(bool); today {
 				sb.WriteString("> 数据为实时数据\n\n")
 			}
@@ -6254,6 +6539,78 @@ func GetAllDataTools() []tool.BaseTool {
 				sections = append(sections, util.MarkdownTableWithTitle(code+" 资金流向（通达信MAC）", []data.MACCapitalFlowData{*row}))
 			}
 			return strings.Join(sections, "\r\n\r\n"), nil
+		},
+	))
+
+	// GetFuturesPosition - 获取股指期货前20会员多空单持仓趋势（对照大盘走势分析市场多空情绪）
+	tools = append(tools, NewDataToolWrapper(
+		"GetFuturesPosition",
+		"获取股指期货（IF沪深300/IH上证50/IC中证500/IM中证1000）前20名会员的多空单持仓趋势，"+
+			"包括多单/空单持仓量及增减、净持仓（多单-空单）、结算价、现货指数收盘价与基差，可判断期指多空情绪与大盘走势的背离或共振。"+
+			"数据为盘后更新（约17:30后），主源东方财富，降级中金所官网。当用户询问期指多空单、股指期货持仓、净持仓、空头增减、市场多空情绪时使用。",
+		map[string]*schema.ParameterInfo{
+			"variety": {
+				Type:     "string",
+				Desc:     "期指品种：IF（沪深300）、IH（上证50）、IC（中证500）、IM（中证1000），也支持中文名如 沪深300。",
+				Required: true,
+			},
+			"days": {
+				Type: "integer",
+				Desc: "可选，返回最近多少个交易日，默认 20，最大 120。",
+			},
+			"includeMembers": {
+				Type: "boolean",
+				Desc: "可选，是否附带最新交易日前20会员持仓明细龙虎榜（中金所），默认 false。",
+			},
+		},
+		func(args string) (string, error) {
+			variety := strings.TrimSpace(gjson.Get(args, "variety").String())
+			if variety == "" {
+				return "请提供期指品种参数 variety（IF/IH/IC/IM 或 沪深300 等中文名）", nil
+			}
+			days := int(gjson.Get(args, "days").Int())
+			if days <= 0 {
+				days = 20
+			}
+			if days > 120 {
+				days = 120
+			}
+			api := data.NewFuturesPositionApi()
+			resp := api.GetFuturesPositionTrend(variety, "", days)
+			if resp == nil || len(resp.Rows) == 0 {
+				return fmt.Sprintf("未获取到 %s 期指持仓数据，请确认品种代码（IF/IH/IC/IM）", variety), nil
+			}
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("## %s（主力合约 %s，数据源 %s）\r\n\r\n", resp.VarietyName, resp.ContractCode, resp.Source))
+			// 最新一期概要
+			sb.WriteString(util.MarkdownTableWithTitle("最新持仓概要", []data.FuturesPositionBrief{data.BuildFuturesPositionBrief(resp)}))
+			sb.WriteString("\r\n\r\n")
+			// 近 N 日趋势（升序，取尾部）
+			trendRows := resp.Rows
+			if len(trendRows) > days {
+				trendRows = trendRows[len(trendRows)-days:]
+			}
+			sb.WriteString(util.MarkdownTableWithTitle("近"+fmt.Sprint(len(trendRows))+"日多空持仓趋势（手）", trendRows))
+			// 多空解读提示
+			last := trendRows[len(trendRows)-1]
+			if last.NetPosition < 0 {
+				sb.WriteString(fmt.Sprintf("\r\n\r\n> 解读参考：净持仓 %d 手为净空格局；", last.NetPosition))
+			} else {
+				sb.WriteString(fmt.Sprintf("\r\n\r\n> 解读参考：净持仓 +%d 手为净多格局；", last.NetPosition))
+			}
+			if last.NetPosition != 0 {
+				sb.WriteString(fmt.Sprintf("多单增减 %d、空单增减 %d；指数收盘 %.2f、基差 %.2f。净空收窄/净多扩大通常偏多，反之偏空，需结合持仓量（增仓上涨趋势强化，减仓上涨空头回补）与指数走势对照验证。",
+					last.LongChange, last.ShortChange, last.IndexClose, last.Basis))
+			}
+			// 可选：会员明细
+			if gjson.Get(args, "includeMembers").Bool() {
+				ranks := api.GetFuturesMemberRank(resp.Variety, "")
+				if len(ranks) > 0 {
+					sb.WriteString("\r\n\r\n")
+					sb.WriteString(util.MarkdownTableWithTitle("前20会员持仓明细（中金所，手）", ranks))
+				}
+			}
+			return sb.String(), nil
 		},
 	))
 
@@ -6925,11 +7282,11 @@ func GetAllDataTools() []tool.BaseTool {
 	// ==================== 提示词模板管理（4 个工具） ====================
 	tools = append(tools, NewDataToolWrapper(
 		"ListPromptTemplates",
-		"查询提示词模板列表。可按名称和类型筛选，为空则返回全部。返回摘要列表（content 截断为 200 字预览）。当用户想查看已有提示词模板、查找某个模板时使用。",
+		"查询提示词模板列表。可按名称关键词模糊搜索（如传\"龙头\"可命中\"龙头战法复盘\"）、按类型筛选，为空则返回全部。返回摘要列表（content 截断为 200 字预览）。当用户想查看已有提示词模板、查找某个模板时使用。",
 		map[string]*schema.ParameterInfo{
 			"name": {
 				Type:     "string",
-				Desc:     "可选，按模板名称精确筛选",
+				Desc:     "可选，按模板名称关键词模糊筛选（支持部分匹配）",
 				Required: false,
 			},
 			"type": {
@@ -7171,6 +7528,9 @@ func GetAllDataTools() []tool.BaseTool {
 		},
 	))
 
+	// MarkdownToImage - 将 markdown 渲染为 PNG 图片并保存到本地（提取自飞书机器人图片回复链路）
+	tools = append(tools, newMarkdownToImageTool())
+
 	// 根据 API Key 配置过滤工具，未配置对应 Key 的工具不注册
 	filtered := make([]tool.BaseTool, 0, len(tools))
 	for _, t := range tools {
@@ -7184,25 +7544,23 @@ func GetAllDataTools() []tool.BaseTool {
 	return filtered
 }
 
-func fetchUplimitData(date string) (map[string]any, error) {
-	if date == "" {
-		loc, _ := time.LoadLocation("Asia/Shanghai")
-		date = time.Now().In(loc).Format("2006-01-02")
-	}
-	result := data.NewMarketNewsApi().GetUplimitHot(date, 20)
+// fetchUplimitData 拉取涨停梯队数据；date 为空时自动回退到最近有数据的交易日。
+// 返回值二参为实际数据日期（回退后可能与入参 date 不同），调用方须用它标注输出。
+func fetchUplimitData(date string) (map[string]any, string, error) {
+	result, actualDate := data.NewMarketNewsApi().GetUplimitHotSmart(date, 20)
 	if result == nil || result["code"] == nil {
-		return nil, fmt.Errorf("获取涨停梯队数据失败")
+		return nil, actualDate, fmt.Errorf("获取涨停梯队数据失败")
 	}
 	code, _ := result["code"].(float64)
 	if int(code) != 20000 {
 		msg, _ := result["message"].(string)
-		return nil, fmt.Errorf("获取涨停梯队数据失败: %s", msg)
+		return nil, actualDate, fmt.Errorf("获取涨停梯队数据失败: %s", msg)
 	}
 	dataMap, ok := result["data"].(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("涨停梯队数据格式异常")
+		return nil, actualDate, fmt.Errorf("涨停梯队数据格式异常")
 	}
-	return dataMap, nil
+	return dataMap, actualDate, nil
 }
 
 func floatOrDefault(val any) float64 {

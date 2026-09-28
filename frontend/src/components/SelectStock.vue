@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import {h, onBeforeMount, onMounted, onUnmounted, ref, reactive, computed} from 'vue'
-import {SearchStock, GetHotStrategy, OpenURL, Follow, GetFollowList, GetAllCustomStrategies, SaveCustomStrategy, DeleteCustomStrategy, GetConfig, GetGroupList, AddStockGroup, AddGroup} from "../../wailsjs/go/main/App";
+import {SearchStock, GetHotStrategy, OpenURL, Follow, GetFollowList, GetAllCustomStrategies, SaveCustomStrategy, DeleteCustomStrategy, GetConfig, GetGroupList, AddStockGroup, AddGroup, ExportTableToXLSX} from "../../wailsjs/go/main/App";
 import {useMessage, NText, NTag, NButton, NPopconfirm, NDropdown, NIcon} from 'naive-ui'
 import {Environment} from "../../wailsjs/runtime"
-import {BookmarkOutline, TrashOutline, CreateOutline, AddOutline, FolderOpenOutline} from "@vicons/ionicons5";
+import {BookmarkOutline, TrashOutline, CreateOutline, AddOutline, FolderOpenOutline, DownloadOutline} from "@vicons/ionicons5";
 import {EventsEmit} from "../../wailsjs/runtime";
 import StockLightweightKlineChart from "./StockLightweightKlineChart.vue";
 
@@ -94,6 +94,8 @@ function handleCreateGroupAndFollow() {
     if (res === '添加成功') {
       GetGroupList().then(list => {
         groupList.value = list || []
+        // 通知 App.vue 菜单栏立即刷新分组子项
+        EventsEmit('groupListChanged')
         showFollowGroupModal.value = false
         // 通过名称找到新建分组 ID
         const created = groupList.value.find(g => g.name === name)
@@ -307,6 +309,33 @@ function DoSearch(question) {
   Search()
 }
 
+// 导出选股结果为 Excel：复用表格列定义（过滤操作列），行数据取当前结果集全量
+function handleExport() {
+  if (!dataList.value.length) {
+    message.warning('当前没有可导出的选股结果')
+    return
+  }
+  const exportColumns = columns.value
+      .filter(col => col.key !== 'actions')
+      .map(col => {
+        const c = {title: col.title, key: col.key}
+        if (col.children && col.children.length) {
+          c.children = col.children.map(child => ({title: child.title, key: child.key}))
+        }
+        return c
+      })
+  const fileName = `指标选股_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`
+  ExportTableToXLSX(fileName, {
+    sheetName: '指标选股',
+    columns: exportColumns,
+    rows: dataList.value,
+  }).then(path => {
+    if (path) message.success('已导出：' + path)
+  }).catch(err => {
+    message.error(err?.message || '导出失败')
+  })
+}
+
 function openSaveModal(isEdit = false, strategy = null) {
   if (isEdit && strategy) {
     saveForm.id = strategy.id
@@ -452,6 +481,10 @@ function openCenteredWindow(url, width, height) {
         <n-input-group style="text-align: left">
           <n-input :rows="1" clearable v-model:value="search" placeholder="请输入选股指标或者要求" @keyup.enter="Search"/>
           <n-button type="primary" @click="Search">搜索A股</n-button>
+          <n-button type="success" @click="handleExport" :disabled="!dataList.length">
+            <template #icon><n-icon :component="DownloadOutline" size="16"/></template>
+            导出
+          </n-button>
           <n-button type="warning" @click="openSaveModal(false)" :disabled="!search">
             <template #icon><n-icon :component="BookmarkOutline" size="16"/></template>
             保存策略

@@ -239,14 +239,15 @@ func (a *app) summaryChatStream(w http.ResponseWriter, r *http.Request) {
 	history := parseHistory(req.HistoryJSON)
 	tools := make([]data.Tool, 0)
 	if req.EnableTools {
-		tools = data.Tools(tools)
+		// 临时屏蔽响应较慢的工具（见 data.tempDisabledToolNames），避免拖长 AI 总结等待时间
+		tools = data.FilterTempDisabledTools(data.Tools(tools))
 	}
 	o := data.NewDeepSeekOpenAi(ctx, req.AIConfigID)
 	var ch <-chan map[string]any
 	if req.EnableTools {
-		ch = o.NewSummaryStockNewsStreamWithTools(req.Question, sysPromptID, tools, req.Thinking, history)
+		ch = o.NewSummaryStockNewsStreamWithTools(req.Question, sysPromptID, tools, req.Thinking, history, nil)
 	} else {
-		ch = o.NewSummaryStockNewsStream(req.Question, sysPromptID, req.Thinking, history)
+		ch = o.NewSummaryStockNewsStream(req.Question, sysPromptID, req.Thinking, history, nil)
 	}
 
 	for {
@@ -292,12 +293,18 @@ func (a *app) shareText(w http.ResponseWriter, r *http.Request) {
 		req.Title = "AI助手"
 	}
 	analysisTime := time.Now().Format("2006/01/02")
+	// 上传地址：广场服务地址为固定配置（定制版不可修改）
+	uploadBase := strings.TrimSpace(data.GetSettingConfig().PromptPlazaApiBase)
+	if uploadBase == "" {
+		uploadBase = data.DefaultPromptPlazaApiBase
+	}
+	uploadURL := strings.TrimSuffix(uploadBase, "/") + "/upload"
 	resp, err := data.SharedHTTPClient.SetHeader("ua-x", "go-stock").R().SetFormData(map[string]string{
 		"text":         req.Text,
 		"stockCode":    req.Title,
 		"stockName":    req.Title,
 		"analysisTime": analysisTime,
-	}).Post("http://go-stock.sparkmemory.top:16688/upload")
+	}).Post(uploadURL)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

@@ -6,8 +6,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go-stock/backend/agent"
 	"go-stock/backend/agent/tools"
@@ -23,8 +23,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	// 内嵌 IANA 时区数据库，避免发行版二进制因找不到 GOROOT/lib/time/zoneinfo.zip
+	// 导致 time.LoadLocation("Asia/Shanghai") 失败（loc 为 nil 时 Time.In 会 panic）
+	_ "time/tzdata"
 
-	"github.com/duke-git/lancet/v2/cryptor"
 	"github.com/inconshreveable/go-update"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert/yaml"
@@ -50,7 +52,7 @@ type App struct {
 	SponsorInfo        map[string]any
 	VipLevel           int64
 	summaryMu          sync.Mutex
-	summaryCancel      context.CancelFunc
+	summarySession     *summarySession
 	agentMu            sync.Mutex
 	agentCancel        context.CancelFunc
 	stockAlertMu       sync.Mutex
@@ -227,23 +229,9 @@ func (a *App) QuitApp() {
 func (a *App) CheckSponsorCode(sponsorCode string) map[string]any {
 	sponsorCode = strutil.Trim(sponsorCode)
 	if sponsorCode != "" {
-		encrypted, err := hex.DecodeString(sponsorCode)
-		if err != nil {
-			return map[string]any{
-				"code": 0,
-				"msg":  "赞助码格式错误,请输入正确的赞助码!",
-			}
-		}
-		key, err := hex.DecodeString(BuildKey)
-		if err != nil {
-			logger.SugaredLogger.Error(err.Error())
-			return map[string]any{
-				"code": 0,
-				"msg":  "版本错误，不支持赞助码!",
-			}
-		}
-		decrypt := cryptor.AesEcbDecrypt(encrypted, key)
-		if decrypt == nil || len(decrypt) == 0 {
+		raw, err := data.SafeDecryptSponsorCode(sponsorCode, BuildKey)
+		if err != nil || len(raw) == 0 {
+			logger.SugaredLogger.Errorf("赞助码校验失败: %v", err)
 			return map[string]any{
 				"code": 0,
 				"msg":  "赞助码错误，请输入正确的赞助码!",
@@ -268,24 +256,62 @@ func (a *App) CheckSponsorCode(sponsorCode string) map[string]any {
 }
 
 func (a *App) CheckUpdate(flag int) {
+	// 手动检查（flag==1）时向前端持续反馈进度。
+	// GitHub API 与代理测速在国内网络下可能耗时数十秒，若中间状态不推送，
+	// 界面从点击到出结果之间会完全没有响应。
+	manualCheck := flag == 1 && a.ctx != nil
+	emitStatus := func(phase, message string) {
+		if !manualCheck {
+			return
+		}
+		runtime.EventsEmit(a.ctx, "updateCheckStatus", map[string]any{"phase": phase, "message": message})
+	}
+	emitFailed := func(stage, message string) {
+		if !manualCheck {
+			return
+		}
+		runtime.EventsEmit(a.ctx, "updateCheckFailed", map[string]any{
+			"stage":       stage,
+			"message":     message,
+			"releasesUrl": "https://github.com/ArvinLovegood/go-stock/releases",
+		})
+	}
+	emitDone := func(hasUpdate bool) {
+		if !manualCheck {
+			return
+		}
+		runtime.EventsEmit(a.ctx, "updateCheckDone", map[string]any{"hasUpdate": hasUpdate})
+	}
+
+	emitStatus("connecting", "正在连接更新服务器...")
+
 	sponsorCode := strutil.Trim(a.GetConfig().SponsorCode)
 	if sponsorCode != "" {
-		encrypted, err := hex.DecodeString(sponsorCode)
+		raw, err := data.SafeDecryptSponsorCode(sponsorCode, BuildKey)
 		if err != nil {
-			logger.SugaredLogger.Error(err.Error())
+			logger.SugaredLogger.Errorf("赞助码解密失败: %s", err.Error())
+			emitFailed("sponsor", "赞助码校验失败，无法检查更新。")
 			return
 		}
-		key, err := hex.DecodeString(BuildKey)
-		if err != nil {
+		if err = json.Unmarshal(raw, &a.SponsorInfo); err != nil {
 			logger.SugaredLogger.Error(err.Error())
+			emitFailed("sponsor", "赞助码校验失败，无法检查更新。")
 			return
 		}
-		decrypt := string(cryptor.AesEcbDecrypt(encrypted, key))
-		err = json.Unmarshal([]byte(decrypt), &a.SponsorInfo)
-		if err != nil {
-			logger.SugaredLogger.Error(err.Error())
-			return
+	}
+
+	// 定制版本：不检查新版本、不启用自动更新（启动检查/定时检查/手动检查均在此拦截），
+	// 仅保留赞助码解密与 VIP 等级判定（VIP2 及以上仍同步资讯）
+	if CustomBuild {
+		if _, vipLevel, ok := a.isVip(sponsorCode, "", &models.GitHubReleaseVersion{}); ok {
+			level, _ := convertor.ToInt(vipLevel)
+			a.VipLevel = level
+			if level >= 2 {
+				go a.syncNews()
+			}
 		}
+		emitDone(false)
+		return
 	}
 
 	if Version == "" {
@@ -311,36 +337,44 @@ func (a *App) CheckUpdate(flag int) {
 		"X-GitHub-Api-Version": "2022-11-28",
 	}
 
+	// 共享客户端超时 300s：GitHub 不可达时手动检查会长时间挂起，必须尽快失败并给出提示
+	apiClient := data.CreateHTTPClientWithTimeout(20 * time.Second)
+
 	releaseVersion := &models.GitHubReleaseVersion{}
 	if updateChannel == "release" {
-		resp, err := data.SharedHTTPClient.R().
+		resp, err := apiClient.R().
 			SetHeaders(githubApiHeaders).
 			SetResult(releaseVersion).
 			Get("https://api.github.com/repos/ArvinLovegood/go-stock/releases/latest")
 		if err != nil {
 			logger.SugaredLogger.Errorf("get github release version error:%s", err.Error())
+			emitFailed("metadata", "无法连接更新服务器，请检查网络后重试。")
 			return
 		}
 		if resp.StatusCode() != 200 {
 			logger.SugaredLogger.Errorf("get github release version failed, status:%d", resp.StatusCode())
+			emitFailed("metadata", fmt.Sprintf("更新服务器返回异常状态(%d)，请稍后重试。", resp.StatusCode()))
 			return
 		}
 	} else {
 		var releases []models.GitHubReleaseVersion
-		resp, err := data.SharedHTTPClient.R().
+		resp, err := apiClient.R().
 			SetHeaders(githubApiHeaders).
 			SetResult(&releases).
 			Get("https://api.github.com/repos/ArvinLovegood/go-stock/releases")
 		if err != nil {
 			logger.SugaredLogger.Errorf("get github releases error:%s", err.Error())
+			emitFailed("metadata", "无法连接更新服务器，请检查网络后重试。")
 			return
 		}
 		if resp.StatusCode() != 200 {
 			logger.SugaredLogger.Errorf("get github releases failed, status:%d", resp.StatusCode())
+			emitFailed("metadata", fmt.Sprintf("更新服务器返回异常状态(%d)，请稍后重试。", resp.StatusCode()))
 			return
 		}
 		if len(releases) == 0 {
 			logger.SugaredLogger.Errorf("no releases found")
+			emitFailed("metadata", "未获取到任何发布版本，请稍后重试。")
 			return
 		}
 		if updateChannel == "pre" {
@@ -367,15 +401,17 @@ func (a *App) CheckUpdate(flag int) {
 	}
 
 	if releaseVersion.TagName != Version {
+		emitStatus("preparing", "发现新版本 "+releaseVersion.TagName+"，正在准备更新...")
+
 		tag := &models.Tag{}
-		tagResp, tagErr := data.SharedHTTPClient.R().
+		tagResp, tagErr := apiClient.R().
 			SetHeaders(githubApiHeaders).
 			SetResult(tag).
 			Get("https://api.github.com/repos/ArvinLovegood/go-stock/git/ref/tags/" + releaseVersion.TagName)
 		if tagErr == nil && tagResp.StatusCode() == 200 && tag.Object.Url != "" {
 			releaseVersion.Tag = *tag
 			commit := &models.Commit{}
-			commitResp, commitErr := data.SharedHTTPClient.R().
+			commitResp, commitErr := apiClient.R().
 				SetHeaders(githubApiHeaders).
 				SetResult(commit).
 				Get(tag.Object.Url)
@@ -398,7 +434,9 @@ func (a *App) CheckUpdate(flag int) {
 				assetName = "go-stock-windows-amd64.exe"
 			}
 		} else if IsMacOS() {
-			assetName = "go-stock-darwin-universal"
+			// macOS 下载 .app bundle 完整包（含 Info.plist/资源/签名），整体替换生效；
+			// 裸二进制替换会破坏代码签名且在 App Translocation/DMG 场景必然失败
+			assetName = "go-stock-darwin-universal.zip"
 		} else if IsLinux() {
 			assetName = "go-stock-linux-amd64"
 		}
@@ -419,21 +457,57 @@ func (a *App) CheckUpdate(flag int) {
 		mirrorDownloadUrl := "https://gh.927223.xyz/" + originalDownloadUrl
 		manualDownloadTip := fmt.Sprintf("\n手动下载链接(加速镜像): %s\n手动下载链接(原始地址): %s\n下载后请替换当前程序文件即可完成更新。", mirrorDownloadUrl, originalDownloadUrl)
 
-		go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
-			"time":    "发现新版本：" + releaseVersion.TagName,
-			"isRed":   true,
-			"source":  "go-stock",
-			"content": commitMessage + "\n正在下载新版本，请耐心等待...",
+		var totalSize int64
+		for _, asset := range releaseVersion.Assets {
+			if asset.Name == assetName {
+				totalSize = int64(asset.Size)
+				break
+			}
+		}
+
+		useProxy := data.IsGitHubURL(originalDownloadUrl)
+		var bestProxy string
+		var proxySpeed float64
+		if useProxy {
+			emitStatus("speedtest", "正在测速选择最快的下载通道，可能需要几秒钟...")
+			bestProxy, proxySpeed = data.SelectFastestProxy(a.ctx, originalDownloadUrl)
+		}
+
+		type downloadSource struct{ url, proxy string }
+		var sources []downloadSource
+		if bestProxy != "" && useProxy {
+			sources = append(sources, downloadSource{data.ProxyDownloadURL(originalDownloadUrl, bestProxy), bestProxy})
+		}
+		sources = append(sources, downloadSource{downloadUrl, ""})
+		if downloadUrl != originalDownloadUrl {
+			sources = append(sources, downloadSource{originalDownloadUrl, ""})
+		}
+		sources = append(sources, downloadSource{mirrorDownloadUrl, "gh.927223.xyz"})
+
+		emitDone(true)
+
+		downloadID := fmt.Sprintf("update-%d", time.Now().UnixNano())
+		go runtime.EventsEmit(a.ctx, "updateDownloadStart", map[string]any{
+			"downloadId": downloadID,
+			"version":    releaseVersion.TagName,
+			"total":      totalSize,
+			"proxy":      bestProxy,
+			"proxySpeed": proxySpeed,
+			"message":    commitMessage,
+			"useProxy":   useProxy,
 		})
 
 		tmpFile, err := os.CreateTemp("", "go-stock-update-*.tmp")
 		if err != nil {
 			logger.SugaredLogger.Errorf("create temp file error: %s", err.Error())
-			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
-				"time":    "新版本：" + releaseVersion.TagName,
-				"isRed":   true,
-				"source":  "go-stock",
-				"content": commitMessage + "\n新版本下载失败(无法创建临时文件)。" + manualDownloadTip,
+			go runtime.EventsEmit(a.ctx, "updateDownloadFailed", map[string]any{
+				"downloadId": downloadID,
+				"version":    releaseVersion.TagName,
+				"error":      "无法创建临时文件: " + err.Error(),
+				"manualLinks": map[string]any{
+					"mirror":   mirrorDownloadUrl,
+					"original": originalDownloadUrl,
+				},
 			})
 			return
 		}
@@ -441,22 +515,23 @@ func (a *App) CheckUpdate(flag int) {
 		tmpFile.Close()
 		defer os.Remove(tmpPath)
 
-		downloadClient := data.CreateDownloadClient()
-
-		downloadUrls := []string{mirrorDownloadUrl, downloadUrl}
 		var downloadSuccess bool
-		for _, url := range downloadUrls {
-			_, err = downloadClient.R().
-				SetHeader("User-Agent", "go-stock-updater").
-				SetOutput(tmpPath).
-				Get(url)
+		for i, src := range sources {
+			err := a.downloadUpdate(src.url, tmpPath, totalSize, downloadID, src.proxy)
 			if err != nil {
-				logger.SugaredLogger.Warnf("download from %s error: %s, trying next...", url, err.Error())
+				logger.SugaredLogger.Warnf("download from %s error: %s, trying next...", src.url, err.Error())
+				go runtime.EventsEmit(a.ctx, "downloadProgress", map[string]any{
+					"downloadId":    downloadID,
+					"status":        "retrying",
+					"attempt":       i + 1,
+					"totalAttempts": len(sources),
+					"proxy":         src.proxy,
+				})
 				continue
 			}
 			fileInfo, statErr := os.Stat(tmpPath)
 			if statErr != nil || fileInfo.Size() < 1024*500 {
-				logger.SugaredLogger.Warnf("download from %s file size invalid, trying next...", url)
+				logger.SugaredLogger.Warnf("download from %s file size invalid, trying next...", src.url)
 				continue
 			}
 			downloadSuccess = true
@@ -464,11 +539,44 @@ func (a *App) CheckUpdate(flag int) {
 		}
 
 		if !downloadSuccess {
+			go runtime.EventsEmit(a.ctx, "updateDownloadFailed", map[string]any{
+				"downloadId": downloadID,
+				"version":    releaseVersion.TagName,
+				"error":      "所有下载源均失败",
+				"manualLinks": map[string]any{
+					"mirror":   mirrorDownloadUrl,
+					"original": originalDownloadUrl,
+				},
+			})
+			return
+		}
+
+		go runtime.EventsEmit(a.ctx, "updateDownloadComplete", map[string]any{
+			"downloadId": downloadID,
+			"version":    releaseVersion.TagName,
+		})
+
+		// macOS：解压 .app bundle 并整体替换（见 update_helper_darwin.go），
+		// 成功后下次打开应用即为新版本，不强制重启
+		if IsMacOS() {
+			if err := ApplyMacUpdate(tmpPath); err != nil {
+				logger.SugaredLogger.Error("macOS 更新失败: ", err.Error())
+				go runtime.EventsEmit(a.ctx, "updateDownloadFailed", map[string]any{
+					"downloadId": downloadID,
+					"version":    releaseVersion.TagName,
+					"error":      err.Error(),
+					"manualLinks": map[string]any{
+						"mirror":   mirrorDownloadUrl,
+						"original": originalDownloadUrl,
+					},
+				})
+				return
+			}
 			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
 				"time":    "新版本：" + releaseVersion.TagName,
 				"isRed":   true,
 				"source":  "go-stock",
-				"content": commitMessage + "\n新版本自动下载失败，请手动下载更新。" + manualDownloadTip,
+				"content": "版本更新完成，重启应用后生效（直接退出并重新打开 go-stock 即可）。",
 			})
 			return
 		}
@@ -506,6 +614,7 @@ func (a *App) CheckUpdate(flag int) {
 			})
 		}
 	} else {
+		emitDone(false)
 		if flag == 1 {
 			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
 				"time":    "当前版本：" + Version,
@@ -516,6 +625,24 @@ func (a *App) CheckUpdate(flag int) {
 		}
 
 	}
+
+}
+
+// downloadUpdate 包装 data.DownloadWithProgress，通过 Wails 事件发射下载进度。
+func (a *App) downloadUpdate(url string, tmpPath string, totalSize int64, downloadID string, proxy string) error {
+	return data.DownloadWithProgress(a.ctx, url, tmpPath, totalSize,
+		func(downloaded, total int64, percentage, currentSpeed, avgSpeed float64) {
+			go runtime.EventsEmit(a.ctx, "downloadProgress", map[string]any{
+				"downloadId": downloadID,
+				"downloaded": downloaded,
+				"total":      total,
+				"percentage": percentage,
+				"speed":      currentSpeed,
+				"avgSpeed":   avgSpeed,
+				"proxy":      proxy,
+				"status":     "downloading",
+			})
+		})
 }
 
 func (a *App) isVip(sponsorCode string, downloadUrl string, releaseVersion *models.GitHubReleaseVersion) (string, string, bool) {
@@ -523,26 +650,21 @@ func (a *App) isVip(sponsorCode string, downloadUrl string, releaseVersion *mode
 	vipLevel := "0"
 	sponsorCode = strutil.Trim(a.GetConfig().SponsorCode)
 	if sponsorCode != "" {
-		encrypted, err := hex.DecodeString(sponsorCode)
+		raw, err := data.SafeDecryptSponsorCode(sponsorCode, BuildKey)
 		if err != nil {
+			logger.SugaredLogger.Errorf("赞助码解密失败: %s", err.Error())
+			return "", "0", false
+		}
+		if err = json.Unmarshal(raw, &a.SponsorInfo); err != nil {
 			logger.SugaredLogger.Error(err.Error())
 			return "", "0", false
 		}
-		key, err := hex.DecodeString(BuildKey)
-		if err != nil {
-			logger.SugaredLogger.Error(err.Error())
-			return "", "0", false
-		}
-		decrypt := string(cryptor.AesEcbDecrypt(encrypted, key))
-		err = json.Unmarshal([]byte(decrypt), &a.SponsorInfo)
-		if err != nil {
-			logger.SugaredLogger.Error(err.Error())
-			return "", "0", false
-		}
-		vipLevel = a.SponsorInfo["vipLevel"].(string)
-		vipStartTime, err := time.ParseInLocation("2006-01-02 15:04:05", a.SponsorInfo["vipStartTime"].(string), time.Local)
-		vipEndTime, err := time.ParseInLocation("2006-01-02 15:04:05", a.SponsorInfo["vipEndTime"].(string), time.Local)
-		vipAuthTime, err := time.ParseInLocation("2006-01-02 15:04:05", a.SponsorInfo["vipAuthTime"].(string), time.Local)
+		// 赞助码 JSON 字段类型不保证（如 vipLevel 可能为数字），统一用 convertor.ToString 安全转换，
+		// 禁止 .(string) 硬断言（interface conversion panic 会导致整个进程闪退）
+		vipLevel = convertor.ToString(a.SponsorInfo["vipLevel"])
+		vipStartTime, err := time.ParseInLocation("2006-01-02 15:04:05", convertor.ToString(a.SponsorInfo["vipStartTime"]), time.Local)
+		vipEndTime, err := time.ParseInLocation("2006-01-02 15:04:05", convertor.ToString(a.SponsorInfo["vipEndTime"]), time.Local)
+		vipAuthTime, err := time.ParseInLocation("2006-01-02 15:04:05", convertor.ToString(a.SponsorInfo["vipAuthTime"]), time.Local)
 		if err != nil {
 			logger.SugaredLogger.Error(err.Error())
 			return "", vipLevel, false
@@ -561,7 +683,7 @@ func (a *App) isVip(sponsorCode string, downloadUrl string, releaseVersion *mode
 				if a.SponsorInfo["winDownUrl"] == nil {
 					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, winAssetName)
 				} else {
-					downloadUrl = a.SponsorInfo["winDownUrl"].(string)
+					downloadUrl = convertor.ToString(a.SponsorInfo["winDownUrl"])
 				}
 			} else {
 				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, winAssetName)
@@ -572,7 +694,7 @@ func (a *App) isVip(sponsorCode string, downloadUrl string, releaseVersion *mode
 				if a.SponsorInfo["macDownUrl"] == nil {
 					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal", releaseVersion.TagName)
 				} else {
-					downloadUrl = a.SponsorInfo["macDownUrl"].(string)
+					downloadUrl = convertor.ToString(a.SponsorInfo["macDownUrl"])
 				}
 			} else {
 				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal", releaseVersion.TagName)
@@ -583,7 +705,7 @@ func (a *App) isVip(sponsorCode string, downloadUrl string, releaseVersion *mode
 				if a.SponsorInfo["linuxDownUrl"] == nil {
 					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-linux-amd64", releaseVersion.TagName)
 				} else {
-					downloadUrl = a.SponsorInfo["linuxDownUrl"].(string)
+					downloadUrl = convertor.ToString(a.SponsorInfo["linuxDownUrl"])
 				}
 			} else {
 				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-linux-amd64", releaseVersion.TagName)
@@ -778,6 +900,26 @@ func (a *App) domReady(ctx context.Context) {
 		}
 	}()
 
+	// 政策新闻后台定时抓取（全部门聚合，自动入库，每 5 分钟一次）
+	go func() {
+		scrapePolicyNews := func() {
+			items := data.NewPolicyNewsApi().GetAllDeptPolicyNews(100)
+			logger.SugaredLogger.Infof("政策新闻后台抓取完成，共 %d 条", len(*items))
+			go runtime.EventsEmit(a.ctx, "policyNewsUpdated", len(*items))
+		}
+		// 启动 1 分钟后先抓一次（避开启动高峰）
+		time.Sleep(1 * time.Minute)
+		scrapePolicyNews()
+		idPolicyNews, err := a.cron.AddFunc("@every 5m", func() {
+			scrapePolicyNews()
+		})
+		if err != nil {
+			logger.SugaredLogger.Errorf("AddFunc PolicyNews error:%s", err.Error())
+		} else {
+			a.setCronEntry("PolicyNews", idPolicyNews)
+		}
+	}()
+
 	//刷新基金净值信息
 	go func() {
 		//ticker := time.NewTicker(time.Second * time.Duration(60))
@@ -824,6 +966,16 @@ func (a *App) domReady(ctx context.Context) {
 			logger.SugaredLogger.Errorf("AddFunc MonitorFollowedStockCostPrices error:%s", err.Error())
 		} else {
 			a.setCronEntry("MonitorFollowedStockCostPrices", idCostPrice)
+		}
+
+		// 后台买卖点信号监控节拍：窗口最小化时前端定时器会被深度节流，故由 Go 侧按分钟唤醒前端引擎
+		idSignalMonitor, err := a.cron.AddFunc(fmt.Sprintf("@every %ds", 60), func() {
+			a.signalMonitorTick()
+		})
+		if err != nil {
+			logger.SugaredLogger.Errorf("AddFunc signalMonitorTick error:%s", err.Error())
+		} else {
+			a.setCronEntry("SignalMonitorTick", idSignalMonitor)
 		}
 
 	}()
@@ -904,6 +1056,39 @@ func (a *App) domReady(ctx context.Context) {
 			a.setCronEntry("ConceptFundFlowFetchAndSave", idConceptFundFlow)
 		}
 	}()
+	// 历史数据清理（每日凌晨2:30低峰执行一次，启动后也会补跑一次，详见 cleanHistoricalData）
+	go func() {
+		idHistoryClean, err := a.cron.AddFunc("0 30 2 * * *", func() {
+			cleanHistoricalData()
+		})
+		if err != nil {
+			logger.SugaredLogger.Errorf("AddFunc HistoricalDataCleanup error:%s", err.Error())
+		} else {
+			a.setCronEntry("HistoricalDataCleanup", idHistoryClean)
+		}
+	}()
+	// 启动后补跑一次历史数据清理：桌面应用夜里通常没运行，只靠凌晨 cron 会导致清理长期不执行
+	// （实测 concept_fund_flow 因此积累了 180 万行、跨 3 个月）。延迟 1 分钟避开启动时的加载高峰。
+	go func() {
+		time.Sleep(time.Minute)
+		cleanHistoricalData()
+	}()
+	// 分笔成交缓存清理（每日凌晨3点，保留最近1天）：该表高频写入，仅在启动时清理一次会导致
+	// 长时间运行（不重启）时无限膨胀，进而让大表查询/清理持锁变长阻塞其他读写。
+	go func() {
+		idTxClean, err := a.cron.AddFunc("0 0 3 * * *", func() {
+			if err := db.ClearExpiredStockTransactionCache(); err != nil {
+				logger.SugaredLogger.Errorf("ClearExpiredStockTransactionCache error:%s", err.Error())
+			} else {
+				logger.SugaredLogger.Infof("stock_transaction_cache cleanup done (keep last 1 day)")
+			}
+		})
+		if err != nil {
+			logger.SugaredLogger.Errorf("AddFunc StockTransactionCacheClean error:%s", err.Error())
+		} else {
+			a.setCronEntry("StockTransactionCacheClean", idTxClean)
+		}
+	}()
 	//检查新版本
 	go func() {
 		a.CheckUpdate(0)
@@ -954,6 +1139,25 @@ func (a *App) domReady(ctx context.Context) {
 	}
 	//logger.SugaredLogger.Infof("domReady-cronEntrys:%+v", a.cronEntrys)
 
+}
+
+// cleanHistoricalData 清理历史价值低、只增不减的表：资金流向快照（保留3天）、
+// 快讯与标签、政策新闻、词频/情感分析结果（保留30天）。
+// 这些表由高频采集任务写入，页面与工具只用到最近若干天。
+//
+// 清理只挂在凌晨 cron 上并不可靠：桌面应用夜里通常没有运行，cron 就不会执行，
+// 表会一直膨胀（实测 concept_fund_flow 积累了 180 万行、跨 3 个月）。
+// 因此启动后也会补跑一次，与凌晨低峰清理形成双保险。
+func cleanHistoricalData() {
+	defer PanicHandler()
+	bk := data.NewBKFundFlowApi().CleanOldData(3)
+	concept := data.NewConceptFundFlowApi().CleanOldData(3)
+	telegraph, links := data.NewMarketNewsApi().CleanOldTelegraph(30)
+	policy := data.NewPolicyNewsApi().CleanOldPolicyNews(30)
+	words, sentiments := data.CleanOldSentimentAnalyzes(30)
+	logger.SugaredLogger.Infof(
+		"历史数据清理完成：bk_fund_flow=%d, concept_fund_flow=%d, telegraph=%d(标签%d), policy_news=%d, word_analyzes=%d, sentiment_result_analyzes=%d",
+		bk, concept, telegraph, links, policy, words, sentiments)
 }
 
 func syncAllStockInfo(ctx context.Context) {
@@ -1976,6 +2180,16 @@ func (a *App) SendDingDingMessageByType(message string, stockCode string, msgTyp
 	return data.NewDingDingAPI().SendDingDingMessage(message)
 }
 
+// TestDingDingNotice 使用设置页当前填写的钉钉机器人地址发送测试通知（不读取数据库配置）
+func (a *App) TestDingDingNotice(message string, dingRobot string) string {
+	return data.NewDingDingAPI().SendDingDingMessageByRobot(message, dingRobot)
+}
+
+// TestFeishuNotice 使用设置页当前填写的飞书机器人地址与签名密钥发送测试通知（不读取数据库配置）
+func (a *App) TestFeishuNotice(message string, feishuRobot string, feishuSecret string) string {
+	return data.NewFeishuAPI().SendFeishuMessageByRobot(message, feishuRobot, feishuSecret)
+}
+
 // SendFeishuMessage 发送飞书自定义机器人消息（带 5 分钟去重缓存）
 func (a *App) SendFeishuMessage(message string, stockCode string) string {
 	ttl, _ := a.cache.TTL([]byte(stockCode))
@@ -2140,6 +2354,7 @@ func (a *App) GetVersionInfo() *models.VersionInfo {
 		Wxgzh:             GetImageBase(wxgzh),
 		Content:           VersionCommit,
 		OfficialStatement: OFFICIAL_STATEMENT,
+		CustomBuild:       CustomBuild,
 	}
 }
 
@@ -2284,8 +2499,17 @@ func (a *App) ExportConfig() string {
 	return "导出成功:" + file
 }
 
+// shareUploadURL 返回分析报告分享上传地址：广场服务地址为固定配置（定制版不可修改），
+// 官网与广场服务同进程部署，/upload 挂在 /api 前缀下。
+func shareUploadURL() string {
+	base := strings.TrimSpace(data.GetSettingConfig().PromptPlazaApiBase)
+	if base == "" {
+		base = data.DefaultPromptPlazaApiBase
+	}
+	return strings.TrimSuffix(base, "/") + "/upload"
+}
+
 func (a *App) ShareAnalysis(stockCode, stockName string) string {
-	//http://go-stock.sparkmemory.top:16688/upload
 	res := data.NewDeepSeekOpenAi(a.ctx, 0).GetAIResponseResult(stockCode)
 	if res != nil && len(res.Content) > 100 {
 		analysisTime := res.CreatedAt.Format("2006/01/02")
@@ -2295,7 +2519,7 @@ func (a *App) ShareAnalysis(stockCode, stockName string) string {
 			"stockCode":    stockCode,
 			"stockName":    stockName,
 			"analysisTime": analysisTime,
-		}).Post("http://go-stock.sparkmemory.top:16688/upload")
+		}).Post(shareUploadURL())
 		if err != nil {
 			return err.Error()
 		}
@@ -2305,21 +2529,29 @@ func (a *App) ShareAnalysis(stockCode, stockName string) string {
 	}
 }
 
-// ShareText 直接把文本分享到社区（用于 AI 助手等非 AIResponseResult 场景）
-// title 为空时统一从 text 中提取首个 Markdown 标题或首行有效文本作为标题，
-// 提取失败回退为 "AI助手"。
+// ShareText 直接把文本分享到社区（用于 AI 助手等非 AIResponseResult 场景）。
+// 标题解析优先级：
+//  1. 从 text 中提取（--- 包裹的 # 标题 → 首个 # 标题 → 首行有效文本，跳过对话开头语）
+//  2. 提取失败时用 title（调用方传入的用户提问）作标题
+//  3. 仍为空则回退为 "AI助手"
 func (a *App) ShareText(text, title string) string {
 	text = strings.TrimSpace(text)
 	title = strings.TrimSpace(title)
 	if text == "" {
 		return "内容为空"
 	}
-	if title == "" {
-		if extracted := util.ExtractTitleFromContent(text); extracted != "" {
-			title = extracted
-		} else {
-			title = "AI助手"
-		}
+	// 1. 优先从正文提取标题
+	if extracted := util.ExtractTitleFromContent(text); extracted != "" {
+		title = extracted
+		logger.SugaredLogger.Infof("ShareText 标题提取成功(正文提取): title=%q | 原文片段=%q", title, snippetForLog(text))
+	} else if title != "" {
+		// 2. 提取失败，用调用方传入的提问作标题（折叠换行/截断）
+		title = sanitizeQuestionTitle(title)
+		logger.SugaredLogger.Infof("ShareText 标题兜底(用户提问): title=%q | 原文片段=%q", title, snippetForLog(text))
+	} else {
+		// 3. 都没有则回退
+		title = "AI助手"
+		logger.SugaredLogger.Infof("ShareText 标题提取失败，回退为 AI助手 | 原文片段=%q", snippetForLog(text))
 	}
 	analysisTime := time.Now().Format("2006/01/02")
 	response, err := data.SharedHTTPClient.R().SetHeader("ua-x", "go-stock").SetFormData(map[string]string{
@@ -2327,11 +2559,46 @@ func (a *App) ShareText(text, title string) string {
 		"stockCode":    title,
 		"stockName":    title,
 		"analysisTime": analysisTime,
-	}).Post("http://go-stock.sparkmemory.top:16688/upload")
+	}).Post(shareUploadURL())
 	if err != nil {
 		return err.Error()
 	}
 	return response.String()
+}
+
+// snippetForLog 返回用于日志打印的正文片段：截断到 maxSnippetRunes 个字符，换行转义为字面量 \n。
+func snippetForLog(s string) string {
+	const maxSnippetRunes = 200
+	r := []rune(s)
+	if len(r) > maxSnippetRunes {
+		r = r[:maxSnippetRunes]
+	}
+	return strings.ReplaceAll(string(r), "\n", `\n`)
+}
+
+// sanitizeQuestionTitle 把用户提问清理为可作标题的单行文本：
+// 剥离开头 Markdown 标题符 # 与强调符，换行/制表符折叠为空格，压缩连续空白，截断到 maxLen 字符。
+func sanitizeQuestionTitle(s string) string {
+	s = strings.TrimSpace(s)
+	// 剥离开头的 Markdown 标题符号 #
+	for strings.HasPrefix(s, "#") {
+		s = strings.TrimSpace(strings.TrimPrefix(s, "#"))
+	}
+	// 剥离首尾强调/代码修饰符
+	s = strings.Trim(s, "*`~_")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	s = strings.TrimSpace(s)
+	const maxLen = 60
+	r := []rune(s)
+	if len(r) <= maxLen {
+		return s
+	}
+	return string(r[:maxLen]) + "…"
 }
 
 func (a *App) GetfundList(key string) []data.FundBasic {
@@ -2689,6 +2956,20 @@ func (a *App) GetStockKLinePageWithFallback(stockCode, stockName string, klt str
 	return data.FetchKLineWithFallback(stockCode, stockName, klt, limit, end, adjustFlag)
 }
 
+// GetFuturesPositionTrend 获取股指期货（IF/IH/IC/IM）前20会员多空单持仓趋势，
+// 用于与大盘指数K线走势对照分析。variety 支持 IF/if/IF主力/沪深300 等写法；
+// contract 为空时自动定位主力合约；days 为最近交易日数量（默认 60，上限 500）。
+// 主源为东方财富数据中心（含现货指数收盘价与基差），失败自动降级中金所官网 CSV。
+func (a *App) GetFuturesPositionTrend(variety string, contract string, days int) *data.FuturesPositionResp {
+	return data.NewFuturesPositionApi().GetFuturesPositionTrend(variety, contract, days)
+}
+
+// GetFuturesMemberRank 获取股指期货某交易日前20会员持仓明细龙虎榜（中金所官网）。
+// variety 支持 IF/IH/IC/IM；tradeDate 格式 YYYY-MM-DD，为空取最近一个交易日。
+func (a *App) GetFuturesMemberRank(variety string, tradeDate string) []data.FuturesMemberRank {
+	return data.NewFuturesPositionApi().GetFuturesMemberRank(variety, tradeDate)
+}
+
 // GetChipDistribution 获取/计算股票筹码分布（筹码图）数据（用于前端绘图）。
 // days：近多少个交易日；bins：分箱数量；adjustFlag：""/qfq/hfq
 func (a *App) GetChipDistribution(stockCode string, days int, bins int, adjustFlag string) (*data.ChipDistributionResult, error) {
@@ -2776,11 +3057,34 @@ func (a *App) GetTelegraphList(source string) *[]*models.Telegraph {
 	return telegraphs
 }
 
+// 快讯抓取节流：市场快讯页每 10 秒刷新一次，若每次刷新都重新抓取三个数据源，
+// 会形成约 54 次/分钟的网络请求与大量写库操作（去重 COUNT + 插入 + 标签 FirstOrCreate），
+// 在 SQLite 单写者模型下直接拖慢页面自身查询。这里限制最短抓取间隔，
+// 期间页面刷新只重新读库返回；抓取本身由后台 cron（app.go 中的新闻推送任务）继续保证。
+const telegraphRefetchInterval = 60 * time.Second
+
+var (
+	telegraphRefetchMu   sync.Mutex
+	telegraphRefetchTime time.Time
+)
+
+// telegraphShouldRefetch 判断距上次抓取是否已超过最小间隔，并记录本次抓取时间
+func telegraphShouldRefetch() bool {
+	telegraphRefetchMu.Lock()
+	defer telegraphRefetchMu.Unlock()
+	if !telegraphRefetchTime.IsZero() && time.Since(telegraphRefetchTime) < telegraphRefetchInterval {
+		return false
+	}
+	telegraphRefetchTime = time.Now()
+	return true
+}
+
 func (a *App) ReFleshTelegraphList(source string) *[]*models.Telegraph {
-	//data.NewMarketNewsApi().GetNewTelegraph(30)
-	go data.NewMarketNewsApi().TelegraphList(30)
-	go data.NewMarketNewsApi().GetSinaNews(30)
-	go data.NewMarketNewsApi().TradingViewNews()
+	if telegraphShouldRefetch() {
+		go data.NewMarketNewsApi().TelegraphList(30)
+		go data.NewMarketNewsApi().GetSinaNews(30)
+		go data.NewMarketNewsApi().TradingViewNews()
+	}
 	telegraphs := data.NewMarketNewsApi().GetTelegraphList(source)
 	return telegraphs
 }
@@ -2789,21 +3093,72 @@ func (a *App) GlobalStockIndexes() map[string]any {
 	return data.NewMarketNewsApi().GlobalStockIndexes(30)
 }
 
+// GetGovDepartments 获取国务院各部门网站列表（来自中国政府网部门网站列表页）
+func (a *App) GetGovDepartments() *[]data.GovDepartment {
+	return data.NewPolicyNewsApi().GetGovDepartments()
+}
+
+// GetPolicyNews 获取指定部门发布的最新政策新闻
+func (a *App) GetPolicyNews(department string, limit int) *[]data.PolicyNewsItem {
+	return data.NewPolicyNewsApi().GetPolicyNews(department, limit)
+}
+
+// GetKeyDeptPolicyNews 聚合重点部门最新政策新闻
+func (a *App) GetKeyDeptPolicyNews(limit int) *[]data.PolicyNewsItem {
+	return data.NewPolicyNewsApi().GetKeyDeptPolicyNews(limit)
+}
+
+// GetAllDeptPolicyNews 聚合全部部门最新政策新闻（默认视图）
+func (a *App) GetAllDeptPolicyNews(limit int) *[]data.PolicyNewsItem {
+	return data.NewPolicyNewsApi().GetAllDeptPolicyNews(limit)
+}
+
+// GetStoredPolicyNews 从数据库读取已持久化的政策新闻（department/keyword 可空，日期倒序分页）
+func (a *App) GetStoredPolicyNews(department, keyword string, page, pageSize int) *[]data.PolicyNewsItem {
+	return data.NewPolicyNewsApi().GetStoredPolicyNews(department, keyword, page, pageSize)
+}
+
+// GetKeyDepartments 获取重点部门列表（用户自定义优先，未自定义时返回默认列表）
+func (a *App) GetKeyDepartments() *[]string {
+	return data.NewPolicyNewsApi().GetKeyDepartments()
+}
+
+// SaveKeyDepartments 保存用户自定义重点部门列表（空列表=恢复默认）
+func (a *App) SaveKeyDepartments(departments []string) string {
+	return data.NewPolicyNewsApi().SaveKeyDepartments(departments)
+}
+
 // GlobalStockIndexesReadable 将全球指数 JSON 转为 AI 易读 Markdown 文本。
 func (a *App) GlobalStockIndexesReadable() string {
 	return data.NewMarketNewsApi().GlobalStockIndexesReadable(30)
 }
 
-func (a *App) SummaryStockNews(question string, aiConfigId int, sysPromptId *int, enableTools bool, think bool, eventName string, historyJSON string) {
+// summarySession 标识一次进行中的 SummaryStockNews 流式会话。
+// 使用可比较的指针类型，便于会话结束时判断自己是否仍是当前会话，
+// 避免误清后来新会话的取消句柄。
+type summarySession struct {
+	cancel context.CancelFunc
+}
+
+func (a *App) SummaryStockNews(question string, aiConfigId int, sysPromptId *int, enableTools bool, think bool, eventName string, historyJSON string, imagesJSON string) {
 	ctx, cancel := context.WithCancel(a.ctx)
 
-	// 保存当前会话的 cancel，用于前端中断
+	// 保存当前会话，用于前端中断；新会话开始时取消旧会话
+	session := &summarySession{cancel: cancel}
 	a.summaryMu.Lock()
-	if a.summaryCancel != nil {
-		a.summaryCancel()
+	if a.summarySession != nil {
+		a.summarySession.cancel()
 	}
-	a.summaryCancel = cancel
+	a.summarySession = session
 	a.summaryMu.Unlock()
+	// 仅当自己仍是当前会话时才清空，防止误清新会话的取消句柄
+	clearSession := func() {
+		a.summaryMu.Lock()
+		if a.summarySession == session {
+			a.summarySession = nil
+		}
+		a.summaryMu.Unlock()
+	}
 
 	// 允许前端自定义事件名，避免不同页面之间的事件冲突
 	if strings.TrimSpace(eventName) == "" {
@@ -2811,6 +3166,8 @@ func (a *App) SummaryStockNews(question string, aiConfigId int, sysPromptId *int
 	}
 
 	// 解析对话历史（AI 助手记忆）：空字符串或解析失败则无历史
+	// 注意：历史消息中的图片不重发（base64 体积大，多轮重发会迅速撑爆请求体），
+	// 仅当前提问携带的图片（imagesJSON）会作为 image_url 内容块发送。
 	var history []map[string]interface{}
 	if strings.TrimSpace(historyJSON) != "" {
 		var list []models.AiAssistantMessage
@@ -2826,22 +3183,176 @@ func (a *App) SummaryStockNews(question string, aiConfigId int, sysPromptId *int
 		}
 	}
 
+	// 解析当前提问携带的图片（base64 data URL 或 http(s) 图片链接，仅视觉模型生效）
+	var images []string
+	if strings.TrimSpace(imagesJSON) != "" {
+		_ = json.Unmarshal([]byte(imagesJSON), &images)
+	}
+
+	aiClient := data.NewDeepSeekOpenAi(ctx, aiConfigId)
 	var msgs <-chan map[string]any
 	if enableTools {
-		msgs = data.NewDeepSeekOpenAi(ctx, aiConfigId).NewSummaryStockNewsStreamWithTools(question, sysPromptId, a.AiTools, think, history)
+		// 临时屏蔽响应较慢的工具（见 data.tempDisabledToolNames），避免拖长 AI 总结等待时间
+		msgs = aiClient.NewSummaryStockNewsStreamWithTools(question, sysPromptId, data.FilterTempDisabledTools(a.AiTools), think, history, images)
 	} else {
-		msgs = data.NewDeepSeekOpenAi(ctx, aiConfigId).NewSummaryStockNewsStream(question, sysPromptId, think, history)
+		msgs = aiClient.NewSummaryStockNewsStream(question, sysPromptId, think, history, images)
 	}
 
-	for msg := range msgs {
-		runtime.EventsEmit(a.ctx, eventName, msg)
+	// 无输出看门狗：数据抓取、工具调用或流式输出长时间没有任何消息时强制结束，
+	// 保证前端一定能收到结束事件，避免界面一直停留在“AI分析中”
+	requestTimeout := time.Duration(aiClient.GetTimeout()) * time.Second
+	if requestTimeout <= 0 {
+		requestTimeout = 300 * time.Second
+	}
+	stallTimeout := requestTimeout + 120*time.Second
+	timer := time.NewTimer(stallTimeout)
+	defer timer.Stop()
+
+	// 流式增量合并：模型每秒可能推送数十个 token，逐条 EventsEmit 会产生大量 IPC 调用，
+	// 前端每收到一条消息就要把整篇 markdown 重新解析一次。这里把连续同字段的增量合并，
+	// 每 streamFlushInterval 统一发送一次，内容顺序与逐条发送时完全一致。
+	const streamFlushInterval = 100 * time.Millisecond
+
+	// streamDelta 判断消息是否为可合并的纯文本增量，是则返回字段名与增量文本
+	streamDelta := func(msg any) (string, string, bool) {
+		m, ok := msg.(map[string]any)
+		if !ok {
+			return "", "", false
+		}
+		if code, ok := m["code"].(int); !ok || code != 1 {
+			return "", "", false
+		}
+		if extra, _ := m["extraContent"].(string); extra != "" {
+			return "", "", false
+		}
+		field, text := "", ""
+		if c, _ := m["content"].(string); c != "" {
+			field, text = "content", c
+		}
+		if r, _ := m["reasoning_content"].(string); r != "" {
+			if field != "" {
+				return "", "", false // 同时携带两种内容，不合并，按原样发送
+			}
+			field, text = "reasoning_content", r
+		}
+		if field == "" {
+			return "", "", false
+		}
+		return field, text, true
 	}
 
-	a.summaryMu.Lock()
-	a.summaryCancel = nil
-	a.summaryMu.Unlock()
+	flushTimer := time.NewTimer(streamFlushInterval)
+	if !flushTimer.Stop() {
+		<-flushTimer.C
+	}
+	defer flushTimer.Stop()
+	flushTimerRunning := false
+	startFlushTimer := func() {
+		if flushTimerRunning {
+			return
+		}
+		flushTimer.Reset(streamFlushInterval)
+		flushTimerRunning = true
+	}
+	stopFlushTimer := func() {
+		if !flushTimerRunning {
+			return
+		}
+		if !flushTimer.Stop() {
+			select {
+			case <-flushTimer.C:
+			default:
+			}
+		}
+		flushTimerRunning = false
+	}
 
-	runtime.EventsEmit(a.ctx, eventName, "DONE")
+	var (
+		pendingMsg   map[string]any
+		pendingField string
+		pendingText  strings.Builder
+	)
+	// flushStream 把缓冲区里已合并的增量发给前端；无缓冲内容时不做任何事
+	flushStream := func() {
+		stopFlushTimer()
+		if pendingMsg == nil {
+			return
+		}
+		pendingMsg[pendingField] = pendingText.String()
+		runtime.EventsEmit(a.ctx, eventName, pendingMsg)
+		pendingMsg = nil
+		pendingField = ""
+		pendingText.Reset()
+	}
+
+	for {
+		select {
+		case msg, ok := <-msgs:
+			// 当前会话已被新的请求或手动中断取代：丢弃残余消息（避免污染新会话的输出），
+			// 发送 CANCELLED 而非 DONE，避免前端把刚开始的新分析误标为“分析完成”
+			if ctx.Err() != nil {
+				if ok {
+					go func() {
+						for range msgs {
+						}
+					}()
+				}
+				clearSession()
+				runtime.EventsEmit(a.ctx, eventName, "CANCELLED")
+				return
+			}
+			if !ok {
+				// 流正常结束：先把缓冲区里剩余的内容发出，再通知结束
+				flushStream()
+				clearSession()
+				runtime.EventsEmit(a.ctx, eventName, "DONE")
+				return
+			}
+			timer.Reset(stallTimeout)
+			if field, text, isDelta := streamDelta(msg); isDelta {
+				if field != pendingField {
+					flushStream()
+					pendingField = field
+				}
+				pendingMsg = msg
+				pendingText.WriteString(text)
+				startFlushTimer()
+			} else {
+				// 非增量消息（工具调用日志、错误等）：先落地缓冲区，保证前端拼接顺序不变
+				flushStream()
+				runtime.EventsEmit(a.ctx, eventName, msg)
+			}
+		case <-flushTimer.C:
+			flushTimerRunning = false
+			flushStream()
+		case <-timer.C:
+			// 长时间无输出，强制结束，防止前端永远停在“AI分析中”
+			logger.SugaredLogger.Errorf("SummaryStockNews no message for %s, force finishing", stallTimeout)
+			flushStream()
+			cancel()
+			go func() {
+				for range msgs {
+				}
+			}()
+			runtime.EventsEmit(a.ctx, eventName, map[string]any{
+				"code":     0,
+				"question": question,
+				"content":  "\n\n---\n**AI 分析超时或长时间无响应，已强制结束。**请重试，或检查网络/代理/模型服务配置。",
+			})
+			clearSession()
+			runtime.EventsEmit(a.ctx, eventName, "DONE")
+			return
+		case <-ctx.Done():
+			// 被新请求或前端手动中断取代，静默结束
+			go func() {
+				for range msgs {
+				}
+			}()
+			clearSession()
+			runtime.EventsEmit(a.ctx, eventName, "CANCELLED")
+			return
+		}
+	}
 }
 func (a *App) GetIndustryRank(sort string, cnt int) []any {
 	res := data.NewMarketNewsApi().GetIndustryRank(sort, cnt)
@@ -2984,6 +3495,12 @@ func (a *App) GetAiAssistantSession(sessionId string) (*models.AiAssistantSessio
 	return data.GetAiAssistantSession(sessionId)
 }
 
+// UploadImageToImageBed 将 base64 图片上传到免费图床（img.scdn.io），返回外链 URL。
+// AI 助手视觉对话默认走外链 URL 模式：本地图先托管到图床转成 URL 再发送。
+func (a *App) UploadImageToImageBed(base64Data string, filename string) (string, error) {
+	return data.UploadImageToImageBed(base64Data, filename)
+}
+
 // SaveAiAssistantSession 保存 AI 助手会话消息到数据库
 func (a *App) SaveAiAssistantSession(sessionId string, messages []models.AiAssistantMessage) error {
 	return data.SaveAiAssistantSession(sessionId, messages)
@@ -2995,8 +3512,9 @@ func (a *App) SaveAiAssistantSession(sessionId string, messages []models.AiAssis
 //	@receiver a
 //	@param baseUrl 接口地址（如 https://api.deepseek.com）
 //	@param apiKey  鉴权令牌
+//	@param extraHeaders 自定义 HTTP Header（JSON 格式字符串，可为空）
 //	@return []string 模型 ID 列表
-func (a *App) FetchAiModels(baseUrl, apiKey string) []string {
+func (a *App) FetchAiModels(baseUrl, apiKey, extraHeaders string) []string {
 	baseUrl = strutil.Trim(baseUrl)
 	apiKey = strutil.Trim(apiKey)
 	if baseUrl == "" || apiKey == "" {
@@ -3013,11 +3531,14 @@ func (a *App) FetchAiModels(baseUrl, apiKey string) []string {
 	client := data.SharedHTTPClient
 	client.SetBaseURL(baseUrl)
 
-	resp, err := client.R().
+	req := client.R().
 		SetHeader("Authorization", "Bearer "+apiKey).
 		SetHeader("Content-Type", "application/json").
-		SetResult(&respData).
-		Get("/models")
+		SetResult(&respData)
+	if extra := data.BuildExtraHeaders(extraHeaders, ""); len(extra) > 0 {
+		req = req.SetHeaders(extra)
+	}
+	resp, err := req.Get("/models")
 	if err != nil {
 		logger.SugaredLogger.Errorf("FetchAiModels error: %v", err)
 		return []string{}
@@ -3037,12 +3558,13 @@ func (a *App) FetchAiModels(baseUrl, apiKey string) []string {
 }
 
 type AiModelInfo struct {
-	ModelName string `json:"modelName"`
-	MaxTokens int    `json:"maxTokens"`
-	Source    string `json:"source"`
+	ModelName     string `json:"modelName"`
+	MaxTokens     int    `json:"maxTokens"`     // 输出上限（max_tokens API 参数）
+	ContextWindow int    `json:"contextWindow"` // 上下文窗口（输入+输出总容量）
+	Source        string `json:"source"`
 }
 
-func (a *App) FetchAiModelInfo(baseUrl, apiKey, modelName string) *AiModelInfo {
+func (a *App) FetchAiModelInfo(baseUrl, apiKey, modelName, extraHeaders string) *AiModelInfo {
 	baseUrl = strutil.Trim(baseUrl)
 	modelName = strutil.Trim(modelName)
 	if baseUrl == "" || modelName == "" {
@@ -3050,9 +3572,10 @@ func (a *App) FetchAiModelInfo(baseUrl, apiKey, modelName string) *AiModelInfo {
 	}
 
 	info := &AiModelInfo{
-		ModelName: modelName,
-		MaxTokens: 0,
-		Source:    "",
+		ModelName:     modelName,
+		MaxTokens:     0,
+		ContextWindow: 0,
+		Source:        "",
 	}
 
 	if apiKey != "" {
@@ -3068,20 +3591,26 @@ func (a *App) FetchAiModelInfo(baseUrl, apiKey, modelName string) *AiModelInfo {
 		client := data.SharedHTTPClient
 		client.SetBaseURL(baseUrl)
 
-		resp, err := client.R().
+		req := client.R().
 			SetHeader("Authorization", "Bearer "+apiKey).
 			SetHeader("Content-Type", "application/json").
-			SetResult(&detail).
-			Get("/models/" + modelName)
+			SetResult(&detail)
+		if extra := data.BuildExtraHeaders(extraHeaders, ""); len(extra) > 0 {
+			req = req.SetHeaders(extra)
+		}
+		resp, err := req.Get("/models/" + modelName)
 
 		if err == nil && !resp.IsError() && detail.ID != "" {
+			// 上下文窗口：优先 max_context_length，其次 context_length
 			if detail.MaxContextLen > 0 {
-				info.MaxTokens = detail.MaxContextLen
+				info.ContextWindow = detail.MaxContextLen
 				info.Source = "api"
 			} else if detail.ContextLength > 0 {
-				info.MaxTokens = detail.ContextLength
+				info.ContextWindow = detail.ContextLength
 				info.Source = "api"
-			} else if detail.MaxOutputTok > 0 {
+			}
+			// 输出上限：优先 max_output_tokens，其次 max_tokens
+			if detail.MaxOutputTok > 0 {
 				info.MaxTokens = detail.MaxOutputTok
 				info.Source = "api"
 			} else if detail.MaxTokensField > 0 {
@@ -3091,130 +3620,25 @@ func (a *App) FetchAiModelInfo(baseUrl, apiKey, modelName string) *AiModelInfo {
 		}
 	}
 
+	// 兜底：从内置模型表补全未获取到的字段
+	if info.ContextWindow == 0 {
+		if cw := agent.GetBuiltinModelContextWindow(modelName); cw > 0 {
+			info.ContextWindow = cw
+			if info.Source == "" {
+				info.Source = "builtin"
+			}
+		}
+	}
 	if info.MaxTokens == 0 {
-		if maxTokens := getBuiltinModelMaxTokens(modelName); maxTokens > 0 {
-			info.MaxTokens = maxTokens
-			info.Source = "builtin"
+		if mo := agent.GetBuiltinModelMaxOutput(modelName); mo > 0 {
+			info.MaxTokens = mo
+			if info.Source == "" {
+				info.Source = "builtin"
+			}
 		}
 	}
 
 	return info
-}
-
-func getBuiltinModelMaxTokens(modelName string) int {
-	modelTokenMap := map[string]int{
-		"deepseek-chat":        65536,
-		"deepseek-reasoner":    65536,
-		"deepseek-coder":       16384,
-		"deepseek-v3":          65536,
-		"deepseek-r1":          65536,
-		"gpt-4o":               16384,
-		"gpt-4o-mini":          16384,
-		"gpt-4o-2024-05-13":    4096,
-		"gpt-4-turbo":          4096,
-		"gpt-4-turbo-preview":  4096,
-		"gpt-4":                8192,
-		"gpt-4-32k":            32768,
-		"gpt-3.5-turbo":        4096,
-		"gpt-3.5-turbo-16k":    16384,
-		"gpt-4.1":              32768,
-		"gpt-4.1-mini":         32768,
-		"gpt-4.1-nano":         32768,
-		"o1":                   100000,
-		"o1-mini":              65536,
-		"o1-preview":           32768,
-		"o3-mini":              100000,
-		"o4-mini":              100000,
-		"claude-3-5-sonnet":    8192,
-		"claude-3-5-haiku":     8192,
-		"claude-3-opus":        4096,
-		"claude-3-sonnet":      4096,
-		"claude-3-haiku":       4096,
-		"glm-4":                8192,
-		"glm-4-plus":           4096,
-		"glm-4-air":            4096,
-		"glm-4-flash":          4096,
-		"glm-4-long":           4096,
-		"chatglm-turbo":        4096,
-		"moonshot-v1-8k":       8192,
-		"moonshot-v1-32k":      32768,
-		"moonshot-v1-128k":     131072,
-		"qwen-turbo":           8192,
-		"qwen-plus":            131072,
-		"qwen-max":             8192,
-		"qwen-long":            65536,
-		"qwen2.5-72b-instruct": 32768,
-		"hunyuan-lite":         4096,
-		"hunyuan-standard":     4096,
-		"hunyuan-pro":          4096,
-		"hunyuan-turbo":        4096,
-		"spark-lite":           4096,
-		"spark-pro":            4096,
-		"spark-max":            4096,
-		"spark-4.0-ultra":      4096,
-		"yi-light":             16384,
-		"yi-large":             16384,
-		"yi-medium":            16384,
-		"yi-spark":             16384,
-		"yi-vision":            16384,
-		"abab6.5-chat":         8192,
-		"abab6.5s-chat":        8192,
-		"abab5.5-chat":         4096,
-		"baichuan2-turbo":      4096,
-		"baichuan2-53b":        4096,
-		"ernie-4.0":            4096,
-		"ernie-3.5":            4096,
-		"ernie-speed":          4096,
-		"ernie-lite":           4096,
-	}
-
-	if maxTokens, ok := modelTokenMap[modelName]; ok {
-		return maxTokens
-	}
-
-	for prefix, maxTokens := range map[string]int{
-		"deepseek":      65536,
-		"gpt-4o":        16384,
-		"gpt-4-turbo":   4096,
-		"gpt-4-":        8192,
-		"gpt-3.5":       4096,
-		"gpt-4.1":       32768,
-		"o1-":           65536,
-		"o3-":           100000,
-		"o4-":           100000,
-		"claude-3":      8192,
-		"glm-4":         8192,
-		"chatglm":       4096,
-		"moonshot-v1":   8192,
-		"qwen-":         8192,
-		"qwen2":         32768,
-		"hunyuan-":      4096,
-		"spark-":        4096,
-		"yi-":           16384,
-		"abab":          8192,
-		"baichuan":      4096,
-		"ernie-":        4096,
-		"llama-3":       8192,
-		"llama3":        8192,
-		"mistral-":      8192,
-		"mixtral-":      32768,
-		"codestral-":    32768,
-		"gemini-1.5":    8192,
-		"gemini-2":      8192,
-		"command-r":     4096,
-		"Qwen/Qwen":     32768,
-		"deepseek-ai/":  65536,
-		"meta-llama/":   8192,
-		"mistralai/":    32768,
-		"Pro/deepseek-": 65536,
-		"Pro/qwen-":     32768,
-	} {
-		if strings.HasPrefix(modelName, prefix) {
-			return maxTokens
-		}
-	}
-
-	return 0
 }
 
 // InitCronTasks 在应用启动时，自动为启用状态的定时任务创建调度
@@ -3236,6 +3660,76 @@ func (a *App) InitCronTasks() {
 			logger.SugaredLogger.Info("已自动创建异动数据保存定时任务")
 		}
 	}
+	if !cronApi.ExistsByTaskType("daily_review") {
+		task := &models.CronTask{
+			Name:     "每日复盘",
+			CronExpr: "0 0 18 * * 1-5", // 交易日 18:00
+			TaskType: "daily_review",
+			Enable:   true,
+			Status:   "active",
+			Params:   `{"aiConfigId":0,"sysPromptId":0,"thinking":false,"agentMode":"","includeLhb":true,"pushFeishu":false,"pushDingDing":false}`,
+			Description: "收盘后自动生成当日复盘报告（市场统计+交易记录+龙虎榜），aiConfigId=0 时使用第一个AI配置；" +
+				"18:00 生成时龙虎榜数据已发布，素材更完整",
+		}
+		err := cronApi.Create(task)
+		if err != nil {
+			logger.SugaredLogger.Errorf("自动创建每日复盘任务失败：%v", err)
+		} else {
+			logger.SugaredLogger.Info("已自动创建每日复盘定时任务")
+		}
+	}
+	if !cronApi.ExistsByTaskType("morning_strategy") {
+		task := &models.CronTask{
+			Name:        "盘前策略",
+			CronExpr:    "0 0 9 * * 1-5", // 交易日 09:00
+			TaskType:    "morning_strategy",
+			Enable:      true,
+			Status:      "active",
+			Params:      `{"aiConfigId":0,"sysPromptId":0,"thinking":false,"agentMode":"","pushFeishu":false,"pushDingDing":false}`,
+			Description: "盘前自动生成当日策略（基于昨日复盘+隔夜外围+龙虎榜+自选股），aiConfigId=0 时使用第一个AI配置",
+		}
+		err := cronApi.Create(task)
+		if err != nil {
+			logger.SugaredLogger.Errorf("自动创建盘前策略任务失败：%v", err)
+		} else {
+			logger.SugaredLogger.Info("已自动创建盘前策略定时任务")
+		}
+	}
+	if !cronApi.ExistsByTaskType("recommend_backtest") {
+		// 为 3/5/10/20/30 交易日五种持有期各建一个每交易日自动执行的回测任务：
+		// 时间依次错开 10 分钟——回测内部按持有期串行执行（见 backtestRunLock），
+		// 同时触发时后到的那个会被跳过，错开可保证每个周期当天都能跑完。
+		periods := []int{3, 5, 10, 20, 30}
+		cronExprs := []string{
+			"0 30 18 * * 1-5", // 3 日：18:30
+			"0 40 18 * * 1-5", // 5 日：18:40
+			"0 50 18 * * 1-5", // 10 日：18:50
+			"0 0 19 * * 1-5",  // 20 日：19:00
+			"0 10 19 * * 1-5", // 30 日：19:10
+		}
+		for i, days := range periods {
+			name := fmt.Sprintf("推荐回测(%d日)", days)
+			if cronApi.ExistsByName(name) {
+				continue
+			}
+			task := &models.CronTask{
+				Name:     name,
+				CronExpr: cronExprs[i],
+				TaskType: "recommend_backtest",
+				Enable:   true,
+				Status:   "active",
+				Params:   fmt.Sprintf(`{"periodDays":%d}`, days),
+				Description: fmt.Sprintf("收盘后自动核算 AI 历史推荐在推荐日之后 %d 个交易日的持有期收益及其相对沪深300 的超额收益，"+
+					"写入「推荐回测统计」（页面上按持有期切换查看）；已回测记录自动跳过，重复执行不会产生重复数据", days),
+			}
+			err := cronApi.Create(task)
+			if err != nil {
+				logger.SugaredLogger.Errorf("自动创建推荐回测任务失败：%v", err)
+			} else {
+				logger.SugaredLogger.Infof("已自动创建推荐回测定时任务：%s", name)
+			}
+		}
+	}
 	tasks := cronApi.GetAll()
 	if len(tasks) == 0 {
 		return
@@ -3255,15 +3749,49 @@ func (a *App) InitCronTasks() {
 		}
 		a.setCronEntry(convertor.ToString(taskCopy.ID)+"_"+taskCopy.Name, entryID)
 	}
+	a.catchUpRecommendBacktest(cronApi)
+}
+
+// recommendBacktestCatchUpHours 推荐回测启动补偿阈值：距上次回测超过该时长则开机补跑一次。
+// 取 20 小时（<24 小时）既保证"每天至少执行一次"，又避免同一天多次启动重复执行。
+const recommendBacktestCatchUpHours = 20
+
+// catchUpRecommendBacktest 推荐回测启动补偿：定时任务只有在应用运行到触发时刻才会执行，
+// 用户收盘后未开机就会整天漏跑。对每个超过阈值未执行的持有期任务依次后台补跑；
+// 回测对"推荐 + 持有期"只核算一次（已回测记录自动跳过），故补跑不会产生重复数据。
+func (a *App) catchUpRecommendBacktest(cronApi *agent.CronTaskApi) {
+	var stale []models.CronTask
+	for _, t := range cronApi.GetAll() {
+		if t.TaskType != "recommend_backtest" {
+			continue
+		}
+		if t.LastRunAt != nil && time.Since(*t.LastRunAt) < recommendBacktestCatchUpHours*time.Hour {
+			continue
+		}
+		stale = append(stale, t)
+	}
+	if len(stale) == 0 {
+		return
+	}
+	logger.SugaredLogger.Infof("推荐回测任务超过 %d 小时未执行（%d 个），启动后后台依次补跑", recommendBacktestCatchUpHours, len(stale))
+	// 串行执行：回测内部为串行锁，并发触发会被跳过，故在一个 goroutine 中依次补跑
+	go func(list []models.CronTask) {
+		defer PanicHandler()
+		for i := range list {
+			if err := agent.NewCronTaskApi().ExecuteTask(a.ctx, &list[i]); err != nil {
+				logger.SugaredLogger.Errorf("推荐回测启动补偿执行失败：%v %s", err, list[i].Name)
+			}
+		}
+	}(stale)
 }
 
 // AbortSummaryStockNews 取消当前进行中的 SummaryStockNews 流式回答
 func (a *App) AbortSummaryStockNews() {
 	a.summaryMu.Lock()
 	defer a.summaryMu.Unlock()
-	if a.summaryCancel != nil {
-		a.summaryCancel()
-		a.summaryCancel = nil
+	if a.summarySession != nil {
+		a.summarySession.cancel()
+		a.summarySession = nil
 	}
 }
 
@@ -3424,6 +3952,90 @@ func (a *App) GetCronTaskTypes() []lo.Tuple2[string, string] {
 	return agent.NewCronTaskApi().GetTaskTypes()
 }
 
+// ---------------- 每日复盘 / 盘前策略 ----------------
+
+// GenerateDailyReviewNow
+//
+//	@Description: 手动生成每日复盘报告（后台执行，完成后通过 dailyReviewGenerated 事件通知前端）
+//	@param date 报告日期（空串=今天）
+//	@param aiConfigId AI 配置 ID（0=使用第一个 AI 配置）
+//	@param sysPromptId 系统提示词模板 ID（0=内置复盘提示词）
+//	@param agentMode AI 分析模式（""=自动/react/plan_execute/deepagents）
+func (a *App) GenerateDailyReviewNow(date string, aiConfigId int, sysPromptId int, agentMode string) string {
+	go func() {
+		_, err := agent.NewDailyReviewApi().GenerateDailyReview(a.ctx, date, agent.FirstAiConfigId(aiConfigId), sysPromptId, false, agentMode, "manual")
+		if err != nil {
+			logger.SugaredLogger.Errorf("手动生成复盘报告失败：%v", err)
+		}
+	}()
+	return "复盘报告生成中，完成后将自动展示"
+}
+
+// GetDailyReviewByDate 按日期查询复盘报告
+func (a *App) GetDailyReviewByDate(date string) *models.DailyReview {
+	return agent.NewDailyReviewApi().GetDailyReviewByDate(date)
+}
+
+// GetLatestDailyReview 查询最近一条复盘报告
+func (a *App) GetLatestDailyReview() *models.DailyReview {
+	return agent.NewDailyReviewApi().GetLatestDailyReview()
+}
+
+// GetDailyReviewList 分页查询历史复盘报告
+func (a *App) GetDailyReviewList(page int, pageSize int) *models.DailyReviewPageData {
+	return agent.NewDailyReviewApi().GetDailyReviewList(page, pageSize)
+}
+
+// DeleteDailyReview 删除复盘报告
+func (a *App) DeleteDailyReview(id uint) string {
+	err := agent.NewDailyReviewApi().DeleteDailyReview(id)
+	if err != nil {
+		return fmt.Sprintf("删除失败：%v", err)
+	}
+	return "删除成功"
+}
+
+// GenerateMorningStrategyNow
+//
+//	@Description: 手动生成盘前策略（后台执行，完成后通过 morningStrategyGenerated 事件通知前端）
+//	@param date 策略日期（空串=今天）
+//	@param aiConfigId AI 配置 ID（0=使用第一个 AI 配置）
+//	@param sysPromptId 系统提示词模板 ID（0=内置盘前策略提示词）
+//	@param agentMode AI 分析模式（""=自动/react/plan_execute/deepagents）
+func (a *App) GenerateMorningStrategyNow(date string, aiConfigId int, sysPromptId int, agentMode string) string {
+	go func() {
+		_, err := agent.NewMorningStrategyApi().GenerateMorningStrategy(a.ctx, date, agent.FirstAiConfigId(aiConfigId), sysPromptId, false, agentMode, "manual")
+		if err != nil {
+			logger.SugaredLogger.Errorf("手动生成盘前策略失败：%v", err)
+		}
+	}()
+	return "盘前策略生成中，完成后将自动展示"
+}
+
+// GetMorningStrategyByDate 按日期查询盘前策略
+func (a *App) GetMorningStrategyByDate(date string) *models.MorningStrategy {
+	return agent.NewMorningStrategyApi().GetMorningStrategyByDate(date)
+}
+
+// GetLatestMorningStrategy 查询最近一条盘前策略
+func (a *App) GetLatestMorningStrategy() *models.MorningStrategy {
+	return agent.NewMorningStrategyApi().GetLatestMorningStrategy()
+}
+
+// GetMorningStrategyList 分页查询历史盘前策略
+func (a *App) GetMorningStrategyList(page int, pageSize int) *models.MorningStrategyPageData {
+	return agent.NewMorningStrategyApi().GetMorningStrategyList(page, pageSize)
+}
+
+// DeleteMorningStrategy 删除盘前策略
+func (a *App) DeleteMorningStrategy(id uint) string {
+	err := agent.NewMorningStrategyApi().DeleteMorningStrategy(id)
+	if err != nil {
+		return fmt.Sprintf("删除失败：%v", err)
+	}
+	return "删除成功"
+}
+
 // ValidateCronExpr
 //
 //	@Description: 验证 Cron 表达式
@@ -3539,6 +4151,92 @@ func (a *App) DeleteTradingRecord(id uint) error {
 	return data.NewStockDataApi().DeleteTradingRecord(id)
 }
 
+// ImportTradingRecordsFromExcel 弹出文件选择框选择券商导出的成交记录文件并批量导入交易日志。
+// 支持 GBK/UTF-8 编码的 Tab 分隔文本（扩展名可为 .xls/.xlsx/.txt/.csv）。
+// 用户取消选择时返回 nil, nil。
+//
+// 返回值:
+//   - *data.TradingRecordImportResult: 导入结果汇总
+//   - error: 错误信息
+func (a *App) ImportTradingRecordsFromExcel() (*data.TradingRecordImportResult, error) {
+	dialogOptions := runtime.OpenDialogOptions{
+		Title: "选择券商导出的成交记录文件",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Excel/文本 (*.xls;*.xlsx;*.txt;*.csv)", Pattern: "*.xls;*.xlsx;*.txt;*.csv"},
+			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
+		},
+	}
+	filePath, err := runtime.OpenFileDialog(a.ctx, dialogOptions)
+	if err != nil {
+		return nil, err
+	}
+	if filePath == "" {
+		// 用户取消选择
+		return nil, nil
+	}
+	return data.NewStockDataApi().ImportTradingRecords(filePath)
+}
+
+// ExportTradingRecordTemplate 弹出保存对话框，将交易记录导入模板保存为 Excel（.xlsx）文件。
+// 用户取消保存时返回空字符串，不报错。
+func (a *App) ExportTradingRecordTemplate() (string, error) {
+	dialogOptions := runtime.SaveDialogOptions{
+		Title:           "保存交易记录导入模板",
+		DefaultFilename: "交易记录导入模板.xlsx",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Excel (*.xlsx)", Pattern: "*.xlsx"},
+		},
+	}
+	filePath, err := runtime.SaveFileDialog(a.ctx, dialogOptions)
+	if err != nil {
+		return "", err
+	}
+	if filePath == "" {
+		// 用户取消保存
+		return "", nil
+	}
+	xlsxData, err := data.NewStockDataApi().TradingRecordTemplateXLSX()
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filePath, xlsxData, 0644); err != nil {
+		return "", err
+	}
+	return filePath, nil
+}
+
+// ExportTableToXLSX 弹出保存对话框，把表格数据（含二级表头）导出为 Excel（.xlsx）文件。
+// 用于「指标选股」「形态选股」等前端表格导出：前端传列定义 + 行数据，后端生成 xlsx。
+// 用户取消保存时返回空字符串，不报错。
+func (a *App) ExportTableToXLSX(defaultFileName string, table data.ExportTableData) (string, error) {
+	if defaultFileName == "" {
+		defaultFileName = "导出数据.xlsx"
+	}
+	dialogOptions := runtime.SaveDialogOptions{
+		Title:           "导出为 Excel",
+		DefaultFilename: defaultFileName,
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Excel (*.xlsx)", Pattern: "*.xlsx"},
+		},
+	}
+	filePath, err := runtime.SaveFileDialog(a.ctx, dialogOptions)
+	if err != nil {
+		return "", err
+	}
+	if filePath == "" {
+		// 用户取消保存
+		return "", nil
+	}
+	xlsxData, err := data.NewStockDataApi().BuildTableXLSX(table)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filePath, xlsxData, 0644); err != nil {
+		return "", err
+	}
+	return filePath, nil
+}
+
 // CheckFrequentTrading 检查是否频繁交易
 // 参数:
 //   - stockCode: 股票代码
@@ -3616,6 +4314,314 @@ func (a *App) GetIndexQuotes() []data.IndexQuoteItem {
 	return res
 }
 
+// GetGlobalIndexTrend 获取海外指数/韩股当日实时分时走势
+// 主源：东方财富 trends2（内置 3 次重试）；东财失败且为韩股个股时自动切换 Naver 分时兜底
+// （Naver fchart 不支持 KOSPI 指数分时，KOSPI 仅东财源）
+func (a *App) GetGlobalIndexTrend(stockCode string) *data.GlobalIndexTrendResult {
+	res := data.NewEastMoneyKLineApi(data.GetSettingConfig()).GetGlobalIndexTrend(stockCode)
+	if res == nil || len(res.Items) == 0 {
+		if naver := data.GetKoreaMinuteTrend(stockCode); naver != nil && len(naver.Items) > 0 {
+			return naver
+		}
+	}
+	return res
+}
+
+// GetKoreaDayKLine 获取韩股日K（Naver fchart，支持 KOSPI 指数与韩股个股，全历史）
+// stockCode 形如 "100.KS11"（韩国KOSPI）、"177.005930"（三星电子）、"177.000660"（SK海力士）
+func (a *App) GetKoreaDayKLine(stockCode string, days int) *[]data.KLineData {
+	return data.GetKoreaDayKLine(stockCode, days)
+}
+
+// ==================== 自定义知识库向量管理 ====================
+//
+// 以下方法委托给 agent.KnowledgeBaseApi，前端通过 Wails IPC 调用。
+// 业务逻辑在 backend/agent/knowledge_base.go 与 knowledge_base_api.go 中实现。
+
+// CreateKnowledgeBase 创建知识库
+func (a *App) CreateKnowledgeBase(name, description string, aiConfigID uint, embeddingModel string) (*agent.KnowledgeBaseInfo, error) {
+	return agent.NewKnowledgeBaseApi().CreateKB(name, description, aiConfigID, embeddingModel)
+}
+
+// ListAIServicesForKB 列出可用于知识库 embedding 的 AI 服务（前端下拉选择用）
+func (a *App) ListAIServicesForKB() ([]agent.KBAIServiceOption, error) {
+	return agent.NewKnowledgeBaseApi().ListAIServicesForKB()
+}
+
+// GetLongTermMemoryAiConfigId 读取长期记忆绑定的向量服务 ID（0=自动）
+func (a *App) GetLongTermMemoryAiConfigId() int {
+	return agent.NewKnowledgeBaseApi().GetLongTermMemoryAiConfigId()
+}
+
+// SetLongTermMemoryAiConfigId 设置长期记忆绑定的向量服务 ID
+func (a *App) SetLongTermMemoryAiConfigId(id int) error {
+	return agent.NewKnowledgeBaseApi().SetLongTermMemoryAiConfigId(id)
+}
+
+// ListKnowledgeBases 列出所有知识库（按创建时间升序）
+func (a *App) ListKnowledgeBases() []*agent.KnowledgeBaseInfo {
+	return agent.NewKnowledgeBaseApi().ListKB()
+}
+
+// GetKnowledgeBase 获取指定知识库的元信息
+func (a *App) GetKnowledgeBase(name string) (*agent.KnowledgeBaseInfo, error) {
+	return agent.NewKnowledgeBaseApi().GetKB(name)
+}
+
+// DeleteKnowledgeBase 删除指定知识库（包括所有文档与 collection）
+func (a *App) DeleteKnowledgeBase(name string) error {
+	return agent.NewKnowledgeBaseApi().DeleteKB(name)
+}
+
+// AddKBDocument 向指定 KB 添加一段文本（自动切片入库）
+func (a *App) AddKBDocument(kbName, content, source string) ([]string, error) {
+	return agent.NewKnowledgeBaseApi().AddDocument(kbName, content, source)
+}
+
+// UploadKBFile 解析指定文件并入库到 KB（支持 .txt/.md）
+func (a *App) UploadKBFile(kbName, filePath string) ([]string, error) {
+	return agent.NewKnowledgeBaseApi().UploadFile(kbName, filePath)
+}
+
+// UploadKBFiles 批量导入多个文件到 KB（异步后台处理，立即返回）
+func (a *App) UploadKBFiles(kbName string, filePaths []string) error {
+	return agent.NewKnowledgeBaseApi().UploadFiles(kbName, filePaths)
+}
+
+// GetKBVectorizingStatus 查询指定 KB 的向量化状态
+func (a *App) GetKBVectorizingStatus(kbName string) (*agent.KBVectorizingStatus, error) {
+	return agent.NewKnowledgeBaseApi().GetKBVectorizingStatus(kbName), nil
+}
+
+// GetAllKBVectorizingStatuses 查询所有 KB 的向量化状态（前端轮询用）
+func (a *App) GetAllKBVectorizingStatuses() (map[string]*agent.KBVectorizingStatus, error) {
+	return agent.NewKnowledgeBaseApi().GetAllKBVectorizingStatuses(), nil
+}
+
+// SearchKnowledgeBase 在指定 KB 中检索语义相关文档
+func (a *App) SearchKnowledgeBase(kbName, query string, topK int) ([]agent.KnowledgeBaseSearchResult, error) {
+	return agent.NewKnowledgeBaseApi().SearchKB(kbName, query, topK)
+}
+
+// ListKBDocuments 列出指定 KB 中的所有文档切片
+func (a *App) ListKBDocuments(kbName string) ([]agent.KnowledgeBaseDocument, error) {
+	return agent.NewKnowledgeBaseApi().ListDocuments(kbName)
+}
+
+// ListKBDocumentsPaged 分页返回指定 KB 的文档列表（后台分页）
+func (a *App) ListKBDocumentsPaged(kbName string, page, pageSize int) (*agent.KBDocumentsPage, error) {
+	return agent.NewKnowledgeBaseApi().ListDocumentsPaged(kbName, page, pageSize)
+}
+
+// DeleteKBDocument 从指定 KB 中删除单个文档
+func (a *App) DeleteKBDocument(kbName, docID string) error {
+	return agent.NewKnowledgeBaseApi().DeleteDocument(kbName, docID)
+}
+
+// PickKBFilePath 弹出系统文件选择对话框，返回用户选择的文件绝对路径。
+// 用于知识库文档上传场景：前端调用此方法获取路径后再调用 UploadKBFile。
+// 用户取消选择时返回空字符串。
+func (a *App) PickKBFilePath() (string, error) {
+	dialogOptions := runtime.OpenDialogOptions{
+		Title: "选择知识库文档",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "文本/Markdown (*.txt;*.md)", Pattern: "*.txt;*.md"},
+			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
+		},
+	}
+	return runtime.OpenFileDialog(a.ctx, dialogOptions)
+}
+
+// PickKBFilePaths 弹出系统多选文件对话框，返回用户选择的文件绝对路径数组。
+// 用于知识库批量导入场景：前端调用此方法获取路径数组后再调用 UploadKBFiles。
+// 用户取消选择时返回空数组。
+func (a *App) PickKBFilePaths() ([]string, error) {
+	dialogOptions := runtime.OpenDialogOptions{
+		Title: "选择知识库文档（可多选）",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "文本/Markdown (*.txt;*.md)", Pattern: "*.txt;*.md"},
+			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
+		},
+	}
+	return runtime.OpenMultipleFilesDialog(a.ctx, dialogOptions)
+}
+
+// ============ 知识图谱 ============
+
+// BuildKBGraph 异步构建知识库的知识图谱（LLM 抽取实体关系）
+// aiConfigID>0 用指定对话服务，=0 自动取首个 chat 类型
+func (a *App) BuildKBGraph(kbName string, aiConfigID uint) error {
+	return agent.NewKnowledgeBaseApi().BuildKBGraph(kbName, aiConfigID)
+}
+
+// GetKBGraph 读取指定 KB 的知识图谱数据（未构建时返回 nil, nil）
+func (a *App) GetKBGraph(kbName string) (*agent.KBGraph, error) {
+	return agent.NewKnowledgeBaseApi().GetKBGraph(kbName)
+}
+
+// GetKBGraphBuildStatus 查询指定 KB 的图谱构建状态
+func (a *App) GetKBGraphBuildStatus(kbName string) (*agent.KBGraphBuildStatus, error) {
+	return agent.NewKnowledgeBaseApi().GetKBGraphBuildStatus(kbName), nil
+}
+
+// DeleteKBGraph 删除指定 KB 的知识图谱
+func (a *App) DeleteKBGraph(kbName string) error {
+	return agent.NewKnowledgeBaseApi().DeleteKBGraph(kbName)
+}
+
+// GetLongTermMemoryInfo 获取长期记忆向量库信息（文档数、就绪状态、绑定服务）
+func (a *App) GetLongTermMemoryInfo() (*agent.LTMInfo, error) {
+	return agent.NewKnowledgeBaseApi().GetLongTermMemoryInfo(), nil
+}
+
+// SearchLongTermMemory 检索长期记忆（语义召回历史问答）
+func (a *App) SearchLongTermMemory(query string, topK int) ([]agent.MemoryRecall, error) {
+	return agent.NewKnowledgeBaseApi().SearchLongTermMemory(query, topK)
+}
+
+// SearchAllKnowledge 跨所有自定义知识库 + 长期记忆统一检索
+func (a *App) SearchAllKnowledge(query string, topK int) ([]agent.UnifiedKnowledgeHit, error) {
+	return agent.NewKnowledgeBaseApi().SearchAllKnowledge(query, topK)
+}
+
+// SubmitAgentFeedback 提交用户对 Agent 回答的反馈（👍/👎 + 可选原因）
+func (a *App) SubmitAgentFeedback(fb *models.AgentFeedback) error {
+	return agent.NewAgentFeedbackApi().SubmitFeedback(fb)
+}
+
+// ListAgentFeedback 分页查询反馈记录
+func (a *App) ListAgentFeedback(page, pageSize int) (agent.FeedbackPageData, error) {
+	return agent.NewAgentFeedbackApi().ListFeedback(page, pageSize)
+}
+
+// GetAgentFeedbackStats 获取反馈聚合统计
+func (a *App) GetAgentFeedbackStats() (*agent.FeedbackStats, error) {
+	return agent.NewAgentFeedbackApi().FeedbackStats()
+}
+
+// DeleteAgentFeedback 删除单条反馈
+func (a *App) DeleteAgentFeedback(id uint) error {
+	return agent.NewAgentFeedbackApi().DeleteFeedback(id)
+}
+
+// ClearAgentFeedback 清空所有反馈
+func (a *App) ClearAgentFeedback() error {
+	return agent.NewAgentFeedbackApi().ClearFeedback()
+}
+
+// GetUserProfile 读取当前用户画像（"Agent 对我的了解"页面预览）
+func (a *App) GetUserProfile() string {
+	return agent.NewUserProfileApi().GetUserProfile()
+}
+
+func (a *App) GetUserProfileUpdatedAt() string {
+	return agent.NewUserProfileApi().GetUserProfileUpdatedAt()
+}
+
+func (a *App) GetUserProfileSnapshot() *agent.UserProfileSnapshot {
+	return agent.NewUserProfileApi().GetUserProfileSnapshot()
+}
+
+// GetUserProfileEnabled 获取用户画像是否注入 Agent
+func (a *App) GetUserProfileEnabled() bool {
+	return agent.NewUserProfileApi().GetUserProfileEnabled()
+}
+
+// SetUserProfileEnabled 设置用户画像是否注入 Agent
+func (a *App) SetUserProfileEnabled(enabled bool) error {
+	return agent.NewUserProfileApi().SetUserProfileEnabled(enabled)
+}
+
+// SaveUserProfile 手动覆盖用户画像
+func (a *App) SaveUserProfile(content string) error {
+	return agent.NewUserProfileApi().SaveUserProfile(content)
+}
+
+// RelearnUserProfile 一键重新学习用户画像
+func (a *App) RelearnUserProfile() (string, error) {
+	return agent.NewUserProfileApi().RelearnUserProfile()
+}
+
+// ClearUserProfile 清空用户画像
+func (a *App) ClearUserProfile() error {
+	return agent.NewUserProfileApi().ClearUserProfile()
+}
+
+// GetProfileLearnAiConfigId 获取画像学习模型设置（0=自动模式）
+func (a *App) GetProfileLearnAiConfigId() int {
+	return agent.NewUserProfileApi().GetProfileLearnAiConfigId()
+}
+
+// SetProfileLearnAiConfigId 设置画像学习模型（传 0 恢复自动模式）
+func (a *App) SetProfileLearnAiConfigId(aiConfigId int) error {
+	return agent.NewUserProfileApi().SetProfileLearnAiConfigId(aiConfigId)
+}
+
+// RunRecommendBacktest 执行 AI 推荐效果回测
+func (a *App) RunRecommendBacktest(periodDays int) (string, error) {
+	return agent.NewRecommendBacktestApi().RunBacktest(periodDays)
+}
+
+// ListRecommendBacktest 分页查询回测结果（periodDays<=0 表示不限持有期）
+func (a *App) ListRecommendBacktest(page, pageSize, periodDays int) (agent.BacktestPageData, error) {
+	return agent.NewRecommendBacktestApi().ListBacktest(page, pageSize, periodDays)
+}
+
+// ListRecommendBacktestByPrompt 按提示词过滤分页查询回测结果（periodDays<=0 表示不限持有期）
+func (a *App) ListRecommendBacktestByPrompt(page, pageSize int, prompt, promptType string, periodDays int) (agent.BacktestPageData, error) {
+	return agent.NewRecommendBacktestApi().ListBacktestByPrompt(page, pageSize, prompt, promptType, periodDays)
+}
+
+// GetRecommendBacktestStats 获取回测聚合统计（periodDays<=0 表示混合全部持有期）
+func (a *App) GetRecommendBacktestStats(periodDays int) (*agent.BacktestStats, error) {
+	return agent.NewRecommendBacktestApi().BacktestStats(periodDays)
+}
+
+// GetPromptTemplateBacktestStats 获取按提示词模板聚合的回测统计（不含净值曲线，按评分降序）
+func (a *App) GetPromptTemplateBacktestStats(periodDays int) ([]*agent.TemplateStat, error) {
+	return agent.NewRecommendBacktestApi().TemplateBacktestStats(periodDays)
+}
+
+// GetPromptTemplateBacktestDetail 获取单个提示词模板的回测统计（含净值曲线）
+func (a *App) GetPromptTemplateBacktestDetail(templateId, periodDays int) (*agent.TemplateStat, error) {
+	return agent.NewRecommendBacktestApi().TemplateBacktestDetail(templateId, periodDays)
+}
+
+// ListRecommendBacktestByTemplate 按提示词模板 ID 过滤分页查询回测结果（periodDays<=0 表示不限持有期）
+func (a *App) ListRecommendBacktestByTemplate(page, pageSize, templateId, periodDays int) (agent.BacktestPageData, error) {
+	return agent.NewRecommendBacktestApi().ListBacktestByTemplate(page, pageSize, templateId, periodDays)
+}
+
+// ListRecommendBacktestBySkill 按技能 ID（目录名）过滤分页查询回测结果（periodDays<=0 表示不限持有期）
+func (a *App) ListRecommendBacktestBySkill(page, pageSize int, skillId string, periodDays int) (agent.BacktestPageData, error) {
+	return agent.NewRecommendBacktestApi().ListBacktestBySkill(page, pageSize, skillId, periodDays)
+}
+
+// CreatePromptBacktestTask 创建并启动提示词模板主动回测任务（异步执行，进度经 promptBacktestProgress 事件推送）
+func (a *App) CreatePromptBacktestTask(params agent.PromptBacktestCreateParams) (*models.PromptBacktestTask, error) {
+	return agent.NewPromptBacktestApi().CreatePromptBacktestTask(a.ctx, params)
+}
+
+// GetPromptBacktestTaskList 获取提示词模板回测任务列表
+func (a *App) GetPromptBacktestTaskList() ([]*models.PromptBacktestTask, error) {
+	return agent.NewPromptBacktestApi().GetPromptBacktestTaskList()
+}
+
+// GetPromptBacktestTaskDetail 获取回测任务详情（任务 + 各模板统计含净值曲线与 Jaccard 稳定性）
+func (a *App) GetPromptBacktestTaskDetail(taskId uint) (*agent.PromptBacktestTaskDetail, error) {
+	return agent.NewPromptBacktestApi().GetPromptBacktestTaskDetail(taskId)
+}
+
+// GetPromptBacktestPicks 获取回测任务选股明细分页（templateId>0 时按模板过滤）
+func (a *App) GetPromptBacktestPicks(taskId uint, templateId int, page, pageSize int) (agent.PromptBacktestPickPageData, error) {
+	return agent.NewPromptBacktestApi().GetPromptBacktestPicks(taskId, templateId, page, pageSize)
+}
+
+// DeletePromptBacktestTask 删除回测任务及其全部选股记录
+func (a *App) DeletePromptBacktestTask(taskId uint) error {
+	return agent.NewPromptBacktestApi().DeletePromptBacktestTask(taskId)
+}
+
 func (a *App) CreateMCPServer(server *models.MCPServer) string {
 	err := data.NewMCPServerApi().Create(server)
 	if err != nil {
@@ -3675,6 +4681,26 @@ func (a *App) TestMCPServer(id uint) string {
 		return "测试失败: " + err.Error()
 	}
 	return result
+}
+
+// StartMCPOAuth 启动 MCP 服务器的 OAuth 授权流程：
+// 后端完成元数据发现/客户端注册/loopback 监听，并自动打开系统浏览器。
+// 授权结果通过服务器状态（status/testResult）反馈，前端刷新列表查看。
+func (a *App) StartMCPOAuth(id uint) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	authURL, err := data.NewMCPServerApi().StartOAuth(ctx, id)
+	if err != nil {
+		logger.SugaredLogger.Errorf("启动MCP OAuth授权失败: %v", err)
+		return "授权启动失败: " + err.Error()
+	}
+
+	// 拉起系统浏览器完成腾讯账号登录授权
+	if a.ctx != nil {
+		runtime.BrowserOpenURL(a.ctx, authURL)
+	}
+	return "已打开浏览器，请完成授权后回到 go-stock 点击「测试」验证连接"
 }
 
 func (a *App) CreateSkill(skill *models.Skill) string {
@@ -3738,7 +4764,19 @@ type FilesystemSkillInfo struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	DirName     string `json:"dirName"`
+	// Disabled 技能处于停用状态（SKILL.md 已重命名为 SKILL.md.disabled）：
+	// 不出现在 Agent 可用技能列表中，无法被自动路由或显式选择，仅技能管理页面可见。
+	Disabled bool `json:"disabled"`
 }
+
+// 文件系统技能的清单文件名。停用机制基于重命名：
+// 启用态为 skillMdFileName；停用时重命名为 skillMdDisabledName，
+// DeepAgents 技能扫描（glob */SKILL.md）与显式选择加载（读取 SKILL.md）均不会命中停用技能，
+// 而 Agent 每次对话重建，因此停用/启用在下一次对话即实时生效。
+const (
+	skillMdFileName     = "SKILL.md"
+	skillMdDisabledName = "SKILL.md.disabled"
+)
 
 // skillsDir 返回文件系统技能目录路径（与 agent.deepAgentRootDir 保持一致）。
 //
@@ -3826,8 +4864,18 @@ func (a *App) ImportSkillPackage() string {
 	var totalSize int64
 	const maxTotalSize = 100 * 1024 * 1024 // 总计 100MB 上限
 	for _, f := range reader.File {
+		// zip 顶层目录名与技能目录名一致时剥离前缀，避免嵌套结构包解压后双层嵌套
+		name := filepath.ToSlash(f.Name)
+		prefix := skillDirName + "/"
+		if strings.HasPrefix(name, prefix) {
+			name = strings.TrimPrefix(name, prefix)
+		}
+		if name == "" {
+			continue
+		}
+
 		if f.FileInfo().IsDir() {
-			fullPath := filepath.Join(targetDir, f.Name)
+			fullPath := filepath.Join(targetDir, name)
 			os.MkdirAll(fullPath, 0o755)
 			continue
 		}
@@ -3849,7 +4897,7 @@ func (a *App) ImportSkillPackage() string {
 			return "解压失败: " + err.Error()
 		}
 
-		fullPath := filepath.Join(targetDir, f.Name)
+		fullPath := filepath.Join(targetDir, name)
 		// 确保父目录存在
 		os.MkdirAll(filepath.Dir(fullPath), 0o755)
 
@@ -3890,13 +4938,29 @@ func (a *App) ListFilesystemSkills() []FilesystemSkillInfo {
 		if !entry.IsDir() {
 			continue
 		}
-		skillMdPath := filepath.Join(dir, entry.Name(), "SKILL.md")
-		data, err := os.ReadFile(skillMdPath)
-		if err != nil {
+		// 优先读取启用态的 SKILL.md；不存在时读取停用态的 SKILL.md.disabled。
+		// 停用的技能仍返回（带 disabled 标志）供技能管理页面展示与重新启用，
+		// 前端 Agent 聊天侧（斜杠技能菜单）需按 disabled 过滤。
+		var data []byte
+		disabled := false
+		enabledPath := filepath.Join(dir, entry.Name(), skillMdFileName)
+		if _, statErr := os.Stat(enabledPath); statErr == nil {
+			data, _ = os.ReadFile(enabledPath)
+		} else {
+			disabledPath := filepath.Join(dir, entry.Name(), skillMdDisabledName)
+			if _, statErr := os.Stat(disabledPath); statErr == nil {
+				data, _ = os.ReadFile(disabledPath)
+				disabled = true
+			} else {
+				continue
+			}
+		}
+		if len(data) == 0 {
 			continue
 		}
 		info := parseSkillFrontmatter(string(data))
 		info.DirName = entry.Name()
+		info.Disabled = disabled
 		result = append(result, info)
 	}
 	return result
@@ -3921,6 +4985,186 @@ func (a *App) DeleteFilesystemSkill(dirName string) string {
 		return "删除失败: " + err.Error()
 	}
 	return "技能 '" + dirName + "' 已删除"
+}
+
+// DisableFilesystemSkill
+//
+//	@Description: 停用文件系统技能（将 SKILL.md 重命名为 SKILL.md.disabled）。
+//	停用后技能不再出现在 Agent 可用技能列表（DeepAgents 自动路由、/ 斜杠显式选择均不可见），
+//	下次对话即实时生效（Agent 每次对话重建，技能列表每次重新扫描）。
+//	@receiver a
+//	@param dirName 技能目录名
+//	@return string
+func (a *App) DisableFilesystemSkill(dirName string) string {
+	dirName = sanitizeSkillDirName(dirName)
+	if dirName == "" {
+		return "无效的技能目录名"
+	}
+	enabledPath := filepath.Join(skillsDir(), dirName, skillMdFileName)
+	if _, err := os.Stat(enabledPath); err != nil {
+		return "技能不存在或已处于停用状态: " + dirName
+	}
+	disabledPath := filepath.Join(skillsDir(), dirName, skillMdDisabledName)
+	if _, err := os.Stat(disabledPath); err == nil {
+		return "技能已处于停用状态: " + dirName
+	}
+	if err := os.Rename(enabledPath, disabledPath); err != nil {
+		return "停用失败: " + err.Error()
+	}
+	logger.SugaredLogger.Infof("技能已停用: %s", dirName)
+	return "技能 '" + dirName + "' 已停用"
+}
+
+// EnableFilesystemSkill
+//
+//	@Description: 启用文件系统技能（将 SKILL.md.disabled 恢复为 SKILL.md），下次对话即生效。
+//	@receiver a
+//	@param dirName 技能目录名
+//	@return string
+func (a *App) EnableFilesystemSkill(dirName string) string {
+	dirName = sanitizeSkillDirName(dirName)
+	if dirName == "" {
+		return "无效的技能目录名"
+	}
+	disabledPath := filepath.Join(skillsDir(), dirName, skillMdDisabledName)
+	if _, err := os.Stat(disabledPath); err != nil {
+		return "技能不存在或已处于启用状态: " + dirName
+	}
+	enabledPath := filepath.Join(skillsDir(), dirName, skillMdFileName)
+	if _, err := os.Stat(enabledPath); err == nil {
+		return "技能已处于启用状态: " + dirName
+	}
+	if err := os.Rename(disabledPath, enabledPath); err != nil {
+		return "启用失败: " + err.Error()
+	}
+	logger.SugaredLogger.Infof("技能已启用: %s", dirName)
+	return "技能 '" + dirName + "' 已启用"
+}
+
+// UpdateFilesystemSkillDescription
+//
+//	@Description: 单独修改技能描述（仅改写 SKILL.md frontmatter 的 description 字段，
+//	其余 frontmatter 字段与正文逐字节保持不变）。停用技能直接改写其 SKILL.md.disabled。
+//	描述是 Agent 自动路由技能的核心依据，修改后下次对话即生效。
+//	@receiver a
+//	@param dirName 技能目录名
+//	@param description 新描述
+//	@return string
+func (a *App) UpdateFilesystemSkillDescription(dirName, description string) string {
+	dirName = sanitizeSkillDirName(dirName)
+	if dirName == "" {
+		return "无效的技能目录名"
+	}
+	dir := skillsDir()
+	filePath := filepath.Join(dir, dirName, skillMdFileName)
+	if _, err := os.Stat(filePath); err != nil {
+		filePath = filepath.Join(dir, dirName, skillMdDisabledName)
+		if _, err := os.Stat(filePath); err != nil {
+			return "技能不存在: " + dirName
+		}
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return "读取技能文件失败: " + err.Error()
+	}
+	updated, err := replaceFrontmatterDescription(string(data), description, dirName)
+	if err != nil {
+		return "修改失败: " + err.Error()
+	}
+	if err := os.WriteFile(filePath, []byte(updated), 0644); err != nil {
+		return "写入技能文件失败: " + err.Error()
+	}
+	logger.SugaredLogger.Infof("技能描述已更新: %s", dirName)
+	return "描述已更新"
+}
+
+// replaceFrontmatterDescription 替换 SKILL.md frontmatter 中的 description 字段。
+// 采用行级处理而非 YAML 反序列化回写，保证 frontmatter 其他字段与文件正文的格式完全不被改动。
+// 支持：单行值（含引号包裹）、块标量（| / |- / > / >- 及其后续缩进行）；无 frontmatter 时补建。
+func replaceFrontmatterDescription(content, description, fallbackName string) (string, error) {
+	newDescLine := "description: " + yamlDoubleQuote(description)
+
+	// 统一按 \n 处理；原文件为 CRLF 时最终恢复，避免整文件换行符被改动
+	usedCRLF := strings.Contains(content, "\r\n")
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+
+	// 无 frontmatter（首行不是 ---）：补建，name 取目录名
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		out := "---\nname: " + fallbackName + "\n" + newDescLine + "\n---\n\n" + normalized
+		if usedCRLF {
+			out = strings.ReplaceAll(out, "\n", "\r\n")
+		}
+		return out, nil
+	}
+
+	// 定位闭合 ---；未闭合视为无 frontmatter
+	endIdx := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			endIdx = i
+			break
+		}
+	}
+	if endIdx == -1 {
+		return "", errors.New("SKILL.md frontmatter 未闭合（缺少结束 ---）")
+	}
+
+	// 在 frontmatter 内定位 description 行（顶层键，无缩进）
+	descIdx := -1
+	for i := 1; i < endIdx; i++ {
+		if strings.HasPrefix(lines[i], "description:") {
+			descIdx = i
+			break
+		}
+	}
+
+	if descIdx >= 0 {
+		// 块标量值（| / |- / > / >- 等）：连同后续缩进行一并移除
+		indicator := strings.TrimSpace(strings.TrimPrefix(lines[descIdx], "description:"))
+		if indicator == "|" || indicator == "|-" || indicator == "|+" ||
+			indicator == ">" || indicator == ">-" || indicator == ">+" {
+			last := descIdx
+			for i := descIdx + 1; i < endIdx; i++ {
+				if lines[i] == "" || strings.HasPrefix(lines[i], " ") || strings.HasPrefix(lines[i], "\t") {
+					last = i
+				} else {
+					break
+				}
+			}
+			lines = append(lines[:descIdx], append([]string{newDescLine}, lines[last+1:]...)...)
+		} else {
+			lines[descIdx] = newDescLine
+		}
+	} else {
+		// 无 description 字段：插入到 name 行之后，否则插到 frontmatter 首行
+		insertAt := 1
+		for i := 1; i < endIdx; i++ {
+			if strings.HasPrefix(lines[i], "name:") {
+				insertAt = i + 1
+				break
+			}
+		}
+		lines = append(lines[:insertAt], append([]string{newDescLine}, lines[insertAt:]...)...)
+	}
+
+	out := strings.Join(lines, "\n")
+	if usedCRLF {
+		out = strings.ReplaceAll(out, "\n", "\r\n")
+	}
+	return out, nil
+}
+
+// yamlDoubleQuote 将字符串编码为 YAML 双引号标量（转义反斜杠、双引号与控制字符），
+// 使描述中任意字符（含冒号、# 号、换行）都无需担心破坏 frontmatter 结构。
+func yamlDoubleQuote(s string) string {
+	return "\"" + strings.NewReplacer(
+		`\`, `\\`,
+		`"`, `\"`,
+		"\n", `\n`,
+		"\r", `\r`,
+		"\t", `\t`,
+	).Replace(s) + "\""
 }
 
 // SkillFileInfo 技能目录中的文件信息
@@ -4055,6 +5299,223 @@ func (a *App) DeleteSkillFile(dirName, filePath string) string {
 	return "删除成功"
 }
 
+// PackSkillToBase64
+//
+//	@Description: 将本地 skills 目录下的指定技能打包为 zip 并 base64 编码，用于分享到技能广场。
+//	@receiver a
+//	@param dirName 技能目录名
+//	@return map[string]any {code, msg, data:{dirName, name, description, content, fileCount, packageSize}}
+func (a *App) PackSkillToBase64(dirName string) map[string]any {
+	result := map[string]any{"code": -1, "msg": "", "data": nil}
+	dirName = sanitizeSkillDirName(dirName)
+	if dirName == "" {
+		result["msg"] = "无效的技能目录名"
+		return result
+	}
+	skillPath := filepath.Join(skillsDir(), dirName)
+	if _, err := os.Stat(skillPath); err != nil {
+		result["msg"] = "技能目录不存在: " + dirName
+		return result
+	}
+	skillMdPath := filepath.Join(skillPath, "SKILL.md")
+	if _, err := os.Stat(skillMdPath); err != nil {
+		result["msg"] = "技能目录中缺少 SKILL.md，不是有效的技能"
+		return result
+	}
+
+	// 收集技能目录下所有文件（zip 内使用 / 分隔的相对路径，顶层为技能目录名，便于对方导入）
+	type fileItem struct {
+		relPath string
+		absPath string
+	}
+	var files []fileItem
+	var totalSize int64
+	err := filepath.Walk(skillPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		totalSize += info.Size()
+		rel, _ := filepath.Rel(skillPath, path)
+		files = append(files, fileItem{relPath: filepath.ToSlash(rel), absPath: path})
+		return nil
+	})
+	if err != nil {
+		result["msg"] = "遍历技能目录失败: " + err.Error()
+		return result
+	}
+	const maxShareTotal = 2 * 1024 * 1024 // 与服务端技能包 2MB 限制保持一致
+	if totalSize > maxShareTotal {
+		result["msg"] = fmt.Sprintf("技能总大小 %.1fMB 超过分享上限 2MB", float64(totalSize)/1024/1024)
+		return result
+	}
+
+	// 内存打包 zip
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, f := range files {
+		header := &zip.FileHeader{Name: dirName + "/" + f.relPath, Method: zip.Deflate}
+		w, err := zw.CreateHeader(header)
+		if err != nil {
+			result["msg"] = "打包失败: " + err.Error()
+			return result
+		}
+		src, err := os.Open(f.absPath)
+		if err != nil {
+			result["msg"] = "读取文件失败: " + err.Error()
+			return result
+		}
+		_, err = io.Copy(w, src)
+		src.Close()
+		if err != nil {
+			result["msg"] = "写入压缩包失败: " + err.Error()
+			return result
+		}
+	}
+	if err := zw.Close(); err != nil {
+		result["msg"] = "完成压缩包失败: " + err.Error()
+		return result
+	}
+
+	// 解析 SKILL.md 元数据，供前端预填分享表单
+	info := FilesystemSkillInfo{DirName: dirName}
+	if data, err := os.ReadFile(skillMdPath); err == nil {
+		info = parseSkillFrontmatter(string(data))
+		info.DirName = dirName
+	}
+
+	result["code"] = 0
+	result["msg"] = "打包成功"
+	result["data"] = map[string]any{
+		"dirName":     dirName,
+		"name":        info.Name,
+		"description": info.Description,
+		"content":     base64.StdEncoding.EncodeToString(buf.Bytes()),
+		"fileCount":   len(files),
+		"packageSize": int64(buf.Len()),
+	}
+	return result
+}
+
+// ImportSkillFromBase64
+//
+//	@Description: 从技能广场下载的 base64 技能包导入本地 skills 目录（内存 zip 解压，校验规则与导入 zip 文件一致）。
+//	@receiver a
+//	@param contentBase64 技能包 zip 的 base64 内容
+//	@return string 导入结果消息
+func (a *App) ImportSkillFromBase64(contentBase64 string) string {
+	raw, err := base64.StdEncoding.DecodeString(contentBase64)
+	if err != nil {
+		return "技能包解码失败: " + err.Error()
+	}
+	if len(raw) == 0 {
+		return "技能包内容为空"
+	}
+
+	reader, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		return "技能包不是有效的 ZIP 文件: " + err.Error()
+	}
+
+	// 验证包含 SKILL.md，并确定技能目录名（与 ImportSkillPackage 规则一致）
+	var skillDirName string
+	hasSkillMd := false
+	for _, f := range reader.File {
+		if strings.Contains(f.Name, "..") {
+			return "压缩包包含非法路径: " + f.Name
+		}
+		base := filepath.Base(f.Name)
+		if base == "SKILL.md" && !f.FileInfo().IsDir() {
+			hasSkillMd = true
+			dir := filepath.Dir(f.Name)
+			if dir == "." || dir == "" {
+				skillDirName = "imported-skill"
+			} else {
+				skillDirName = strings.SplitN(filepath.ToSlash(dir), "/", 2)[0]
+			}
+			break
+		}
+	}
+	if !hasSkillMd {
+		return "技能包中未找到 SKILL.md 文件，不是有效的技能包"
+	}
+
+	skillDirName = sanitizeSkillDirName(skillDirName)
+	if skillDirName == "" {
+		skillDirName = "imported-skill"
+	}
+
+	targetDir := filepath.Join(skillsDir(), skillDirName)
+	if _, err := os.Stat(targetDir); err == nil {
+		os.RemoveAll(targetDir)
+	}
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return "创建技能目录失败: " + err.Error()
+	}
+
+	const maxFileSize = 10 * 1024 * 1024
+	var totalSize int64
+	const maxTotalSize = 100 * 1024 * 1024
+	for _, f := range reader.File {
+		// zip 顶层目录名与技能目录名一致时剥离前缀，避免解压后双层嵌套
+		name := filepath.ToSlash(f.Name)
+		prefix := skillDirName + "/"
+		if strings.HasPrefix(name, prefix) {
+			name = strings.TrimPrefix(name, prefix)
+		}
+		if name == "" {
+			continue
+		}
+
+		if f.FileInfo().IsDir() {
+			fullPath := filepath.Join(targetDir, name)
+			os.MkdirAll(fullPath, 0o755)
+			continue
+		}
+
+		if f.UncompressedSize64 > maxFileSize {
+			os.RemoveAll(targetDir)
+			return "文件过大（超过10MB）: " + f.Name
+		}
+		totalSize += int64(f.UncompressedSize64)
+		if totalSize > maxTotalSize {
+			os.RemoveAll(targetDir)
+			return "压缩包总大小超过 100MB 限制"
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			os.RemoveAll(targetDir)
+			return "解压失败: " + err.Error()
+		}
+
+		fullPath := filepath.Join(targetDir, name)
+		os.MkdirAll(filepath.Dir(fullPath), 0o755)
+
+		outFile, err := os.Create(fullPath)
+		if err != nil {
+			rc.Close()
+			os.RemoveAll(targetDir)
+			return "创建文件失败: " + err.Error()
+		}
+
+		// 限制实际解压字节数（zip 头声明大小可被伪造，不能仅信任 UncompressedSize64）
+		written, err := io.Copy(outFile, io.LimitReader(rc, maxFileSize+1))
+		rc.Close()
+		outFile.Close()
+		if err != nil {
+			os.RemoveAll(targetDir)
+			return "写入文件失败: " + err.Error()
+		}
+		if written > maxFileSize {
+			os.RemoveAll(targetDir)
+			return "文件过大（超过10MB）: " + f.Name
+		}
+	}
+
+	logger.SugaredLogger.Infof("技能广场技能导入成功: %s -> %s", skillDirName, targetDir)
+	return "技能 '" + skillDirName + "' 导入成功"
+}
+
 // parseSkillFrontmatter 从 SKILL.md 内容中解析 frontmatter 元数据
 func parseSkillFrontmatter(content string) FilesystemSkillInfo {
 	info := FilesystemSkillInfo{}
@@ -4080,6 +5541,112 @@ func parseSkillFrontmatter(content string) FilesystemSkillInfo {
 		info.Description = fm.Description
 	}
 	return info
+}
+
+// buildSkillContext 读取多个文件系统技能（逗号分隔目录名，支持多选），
+// 合并构建系统提示词与用户消息激活块。单个技能读取失败时记录警告并跳过，不影响其他技能加载。
+//
+// 激活设计（提高技能实际生效成功率，尤其 DeepAgents 模式）：
+//   - 系统提示词返回值：技能全文 + 激活纪律（强制主 Agent 应用方法论并在委派时传播技能要求）
+//   - 问题块返回值：随用户消息提交。用户消息是唯一能经 task 委派描述传播到子 Agent 的通道
+//     （子 Agent 不继承系统提示词），激活要求必须随问题文本下发才能触达子 Agent。
+func buildSkillContext(dirNames string) (sysPrompt string, questionBlock string) {
+	var sb strings.Builder
+	var skillNames []string
+	loaded := 0
+	for _, name := range strings.Split(dirNames, ",") {
+		name = sanitizeSkillDirName(name)
+		if name == "" {
+			continue
+		}
+		section, skillName, ok := buildSingleSkillSection(name)
+		if !ok {
+			logger.SugaredLogger.Warnf("技能 %s 加载失败（SKILL.md 读取失败或为空），已跳过", name)
+			continue
+		}
+		if loaded == 0 {
+			sb.WriteString("## 你具备以下专业技能：\n")
+		}
+		sb.WriteString(section)
+		if skillName == "" {
+			skillName = name
+		}
+		skillNames = append(skillNames, skillName)
+		loaded++
+	}
+	if loaded == 0 {
+		return "", ""
+	}
+	sb.WriteString(buildSkillDiscipline(skillNames))
+	return sb.String(), buildSkillQuestionBlock(skillNames)
+}
+
+// buildSkillDiscipline 生成注入系统提示词的技能激活纪律。
+// 技能全文注入系统提示词只代表主 Agent"具备"该知识，模型仍可能用通用泛泛分析替代；
+// 纪律将"应用方法论"与"委派传播"变为强制要求。措辞对 Agent 模式自适应：
+// 委派条款仅在环境提供 task 委派能力（DeepAgents）时被模型采用，React/PlanExecute 无 task 工具时自动忽略。
+func buildSkillDiscipline(skillNames []string) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("\n## 技能激活纪律（用户显式选择，必须遵守）\n用户在本次会话中显式选择了技能：%s。技能内容不是参考资料，而是本次分析的强制执行标准：\n\n", strings.Join(skillNames, "、")))
+	sb.WriteString("1. 【立即应用】从第一条分析开始就必须使用上述技能的方法论、术语体系和输出框架，禁止用通用泛泛分析替代。\n")
+	sb.WriteString("2. 【委派传播】若你具备 task 委派能力（DeepAgents 模式），委派任何子任务时，description 必须原样包含所需技能名称，并明确要求子 Agent 先调用 skill 工具加载该技能、严格按其方法论执行。禁止委派不带技能要求的分析任务。\n")
+	sb.WriteString("3. 【输出自查】最终输出前自查：结论是否呈现技能方法论的特征步骤（该技能定义的分析框架、清单、评级体系等）。若未体现，必须重新按技能流程执行后再输出。\n")
+	return sb.String()
+}
+
+// buildSkillQuestionBlock 生成注入用户消息（问题文本前）的技能激活块。
+// 用户消息会随 task 委派描述被主 Agent 提炼传播给子 Agent，是触达子 Agent 的关键通道；
+// 块中技能名称必须与 skill 工具 <name> 参数一致（均取自 SKILL.md frontmatter name）。
+func buildSkillQuestionBlock(skillNames []string) string {
+	var sb strings.Builder
+	sb.WriteString("<selected_skills>\n")
+	sb.WriteString("用户已显式选择以下技能，本次分析必须使用（不是可选参考）：\n")
+	for i, name := range skillNames {
+		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, name))
+	}
+	sb.WriteString("\n执行纪律：\n")
+	sb.WriteString("- 全程严格遵循技能的方法论与输出格式，最终结论必须体现技能的分析框架\n")
+	sb.WriteString("- 若委派子任务（task 工具可用时），任务描述必须原样包含技能名称，并要求子 Agent 先调用 skill 工具加载该技能后再执行\n")
+	sb.WriteString("</selected_skills>\n\n")
+	return sb.String()
+}
+
+// buildSingleSkillSection 读取单个技能的 SKILL.md，剥离 frontmatter 后返回该技能的提示词片段与 frontmatter 名称。
+// 与技能管理页面（ListFilesystemSkills）数据源一致，确保 / 斜杠指令选择的就是用户在技能管理中看到的技能。
+// 名称用于激活纪律与 skill 工具参数匹配（skill 工具按 frontmatter name 精确匹配）。
+func buildSingleSkillSection(dirName string) (section string, skillName string, ok bool) {
+	skillMdPath := filepath.Join(skillsDir(), dirName, "SKILL.md")
+	data, err := os.ReadFile(skillMdPath)
+	if err != nil {
+		return "", "", false
+	}
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return "", "", false
+	}
+	info := parseSkillFrontmatter(content)
+	// 剥离 frontmatter（--- ... ---），取正文指令
+	const delimiter = "---"
+	if strings.HasPrefix(content, delimiter) {
+		rest := content[len(delimiter):]
+		endIdx := strings.Index(rest, "\n"+delimiter)
+		if endIdx != -1 {
+			body := strings.TrimSpace(rest[endIdx+len(delimiter)+2:])
+			var sb strings.Builder
+			if info.Name != "" {
+				sb.WriteString(fmt.Sprintf("\n### %s\n", info.Name))
+			}
+			if info.Description != "" {
+				sb.WriteString(info.Description + "\n")
+			}
+			if body != "" {
+				sb.WriteString(body + "\n")
+			}
+			return sb.String(), info.Name, true
+		}
+	}
+	// 无 frontmatter 时直接返回内容
+	return content, info.Name, true
 }
 
 // sanitizeSkillDirName 清理技能目录名，只保留安全字符

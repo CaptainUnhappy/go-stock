@@ -105,7 +105,7 @@ func TestSummaryStockNews(t *testing.T) {
 	db.Init("./data/stock.db")
 	question := "分析今日的市场行情走势是否和券商的观点一致"
 	app := NewApp()
-	msgs := data.NewDeepSeekOpenAi(app.ctx, 0).NewSummaryStockNewsStreamWithTools(question, nil, app.AiTools, true, nil)
+	msgs := data.NewDeepSeekOpenAi(app.ctx, 0).NewSummaryStockNewsStreamWithTools(question, nil, app.AiTools, true, nil, nil)
 
 	content := &strings.Builder{}
 	for msg := range msgs {
@@ -122,7 +122,7 @@ func TestCalculateNextRunTime(t *testing.T) {
 
 func TestFetchAiModels(t *testing.T) {
 	app := NewApp()
-	models := app.FetchAiModels("https://ark.cn-beijing.volces.com/api/v3", "")
+	models := app.FetchAiModels("https://ark.cn-beijing.volces.com/api/v3", "", "")
 	t.Log(models)
 
 }

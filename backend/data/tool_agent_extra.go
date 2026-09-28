@@ -31,6 +31,12 @@ func init() {
 	registerToolHandler("GetHotEventList", handleGetHotEventList)
 	registerToolHandler("GetIndustryMoneyRank", handleGetIndustryMoneyRank)
 	registerToolHandler("GetLongTigerList", handleGetLongTigerList)
+	registerToolHandler("GetLhbSeatDetail", handleGetLhbSeatDetail)
+	registerToolHandler("GetBkFundFlowRank", handleGetBkFundFlowRank)
+	registerToolHandler("GetBkConstituentStocks", handleGetBkConstituentStocks)
+	registerToolHandler("GetPolicyNewsList", handleGetPolicyNewsList)
+	registerToolHandler("GetPolicyNewsDetail", handleGetPolicyNewsDetail)
+	registerToolHandler("SearchGovPolicyLibrary", handleSearchGovPolicyLibrary)
 	registerToolHandler("GetEconomicData", handleGetEconomicData)
 	registerToolHandler("GetInvestCalendar", handleGetInvestCalendar)
 	registerToolHandler("GetStockNotice", handleGetStockNoticeTool)
@@ -368,11 +374,105 @@ func handleGetLongTigerList(o *OpenAi, funcArguments string, ctx *ToolContext) e
 	sendToolCallLog(ctx, "GetLongTigerList", funcArguments)
 	date := gjson.Get(funcArguments, "date").String()
 	if date == "" {
-		date = time.Now().Format("2006-01-02")
+		date = LatestLhbTradeDate()
 	}
 	res := NewMarketNewsApi().LongTiger(date)
+	// 顶层带上数据日期，空数据时也不丢失"查的是哪天"，避免 AI 把回退日期的数据当成今天
+	resp := struct {
+		TradeDate string          `json:"tradeDate"`
+		Note      string          `json:"note"`
+		Count     int             `json:"count"`
+		Data      json.RawMessage `json:"data"`
+	}{
+		TradeDate: date,
+		Note:      "本数据为 tradeDate 交易日的龙虎榜数据（龙虎榜于交易日收盘后约17点发布，17点前查询当日为空属正常）",
+		Count:     len(*res),
+	}
+	resp.Data, _ = json.Marshal(res)
+	jsonBytes, _ := json.Marshal(resp)
+	appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, string(jsonBytes))
+	return nil
+}
+
+func handleGetLhbSeatDetail(o *OpenAi, funcArguments string, ctx *ToolContext) error {
+	sendToolCallLog(ctx, "GetLhbSeatDetail", funcArguments)
+	stockCode := gjson.Get(funcArguments, "stockCode").String()
+	if stockCode == "" {
+		appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, "参数 stockCode 不能为空")
+		return nil
+	}
+	date := gjson.Get(funcArguments, "date").String()
+	res := NewLhbSeatApi().GetLhbSeatDetail(stockCode, date)
 	jsonBytes, _ := json.Marshal(res)
 	appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, string(jsonBytes))
+	return nil
+}
+
+func handleGetBkFundFlowRank(o *OpenAi, funcArguments string, ctx *ToolContext) error {
+	sendToolCallLog(ctx, "GetBkFundFlowRank", funcArguments)
+	boardType := gjson.Get(funcArguments, "boardType").String()
+	direction := gjson.Get(funcArguments, "direction").String()
+	date := gjson.Get(funcArguments, "date").String()
+	topN := gjson.Get(funcArguments, "topN").Int()
+	res := GetBkFundFlowRankToMarkdown(boardType, date, direction, int(topN))
+	appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, res)
+	return nil
+}
+
+func handleGetBkConstituentStocks(o *OpenAi, funcArguments string, ctx *ToolContext) error {
+	sendToolCallLog(ctx, "GetBkConstituentStocks", funcArguments)
+	bkCodeOrName := gjson.Get(funcArguments, "bkCodeOrName").String()
+	if bkCodeOrName == "" {
+		appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, "参数 bkCodeOrName 不能为空")
+		return nil
+	}
+	sortBy := gjson.Get(funcArguments, "sortBy").String()
+	order := gjson.Get(funcArguments, "order").String()
+	topN := gjson.Get(funcArguments, "topN").Int()
+	res := GetBkConstituentStocksToMarkdown(bkCodeOrName, sortBy, order, int(topN))
+	appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, res)
+	return nil
+}
+
+func handleGetPolicyNewsList(o *OpenAi, funcArguments string, ctx *ToolContext) error {
+	sendToolCallLog(ctx, "GetPolicyNewsList", funcArguments)
+	department := gjson.Get(funcArguments, "department").String()
+	keyword := gjson.Get(funcArguments, "keyword").String()
+	limit := gjson.Get(funcArguments, "limit").Int()
+	res := NewPolicyNewsApi().GetPolicyNewsToMarkdown(department, keyword, int(limit))
+	appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, res)
+	return nil
+}
+
+func handleGetPolicyNewsDetail(o *OpenAi, funcArguments string, ctx *ToolContext) error {
+	sendToolCallLog(ctx, "GetPolicyNewsDetail", funcArguments)
+	rawurl := gjson.Get(funcArguments, "url").String()
+	if rawurl == "" {
+		appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, "参数 url 不能为空")
+		return nil
+	}
+	res := NewPolicyNewsApi().GetPolicyNewsDetail(rawurl)
+	appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, res)
+	return nil
+}
+
+func handleSearchGovPolicyLibrary(o *OpenAi, funcArguments string, ctx *ToolContext) error {
+	sendToolCallLog(ctx, "SearchGovPolicyLibrary", funcArguments)
+	keyword := gjson.Get(funcArguments, "keyword").String()
+	searchField := gjson.Get(funcArguments, "searchField").String()
+	department := gjson.Get(funcArguments, "department").String()
+	category := gjson.Get(funcArguments, "category").String()
+	sortBy := gjson.Get(funcArguments, "sortBy").String()
+	page := gjson.Get(funcArguments, "page").Int()
+	limit := gjson.Get(funcArguments, "limit").Int()
+	if page < 1 {
+		page = 1
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	res := NewGovPolicyLibApi().SearchGovPolicyLibraryToMarkdown(keyword, searchField, department, category, sortBy, int(page), int(limit))
+	appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, res)
 	return nil
 }
 
@@ -744,51 +844,50 @@ func handleHotspotDiscovery(o *OpenAi, funcArguments string, ctx *ToolContext) e
 	return nil
 }
 
+// uplimitToolResponse 涨停梯队类工具返回包装：顶层带数据日期，避免 AI 搞错数据是哪一天的
+func uplimitToolResponse(date string, res map[string]any) string {
+	resp := struct {
+		TradeDate string          `json:"tradeDate"`
+		Note      string          `json:"note"`
+		Data      json.RawMessage `json:"data"`
+	}{
+		TradeDate: date,
+		Note:      "本数据为 tradeDate 交易日的涨停梯队数据（盘中为实时数据，收盘后为最终数据；非交易日无数据，日期留空时已自动回退到最近有数据的交易日）",
+	}
+	resp.Data, _ = json.Marshal(res)
+	jsonBytes, _ := json.Marshal(resp)
+	return string(jsonBytes)
+}
+
 func handleGetUplimitLadder(o *OpenAi, funcArguments string, ctx *ToolContext) error {
 	sendToolCallLog(ctx, "GetUplimitLadder", funcArguments)
 	date := gjson.Get(funcArguments, "date").String()
-	if date == "" {
-		date = time.Now().Format("2006-01-02")
-	}
-	res := NewMarketNewsApi().GetUplimitHot(date, 20)
-	jsonBytes, _ := json.Marshal(res)
-	appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, string(jsonBytes))
+	res, actualDate := NewMarketNewsApi().GetUplimitHotSmart(date, 20)
+	appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, uplimitToolResponse(actualDate, res))
 	return nil
 }
 
 func handleGetUplimitHotPlates(o *OpenAi, funcArguments string, ctx *ToolContext) error {
 	sendToolCallLog(ctx, "GetUplimitHotPlates", funcArguments)
 	date := gjson.Get(funcArguments, "date").String()
-	if date == "" {
-		date = time.Now().Format("2006-01-02")
-	}
-	res := NewMarketNewsApi().GetUplimitHot(date, 20)
-	jsonBytes, _ := json.Marshal(res)
-	appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, string(jsonBytes))
+	res, actualDate := NewMarketNewsApi().GetUplimitHotSmart(date, 20)
+	appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, uplimitToolResponse(actualDate, res))
 	return nil
 }
 
 func handleGetUplimitHotStocks(o *OpenAi, funcArguments string, ctx *ToolContext) error {
 	sendToolCallLog(ctx, "GetUplimitHotStocks", funcArguments)
 	date := gjson.Get(funcArguments, "date").String()
-	if date == "" {
-		date = time.Now().Format("2006-01-02")
-	}
-	res := NewMarketNewsApi().GetUplimitHot(date, 20)
-	jsonBytes, _ := json.Marshal(res)
-	appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, string(jsonBytes))
+	res, actualDate := NewMarketNewsApi().GetUplimitHotSmart(date, 20)
+	appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, uplimitToolResponse(actualDate, res))
 	return nil
 }
 
 func handleGetUplimitExplodedStocks(o *OpenAi, funcArguments string, ctx *ToolContext) error {
 	sendToolCallLog(ctx, "GetUplimitExplodedStocks", funcArguments)
 	date := gjson.Get(funcArguments, "date").String()
-	if date == "" {
-		date = time.Now().Format("2006-01-02")
-	}
-	res := NewMarketNewsApi().GetUplimitHot(date, 20)
-	jsonBytes, _ := json.Marshal(res)
-	appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, string(jsonBytes))
+	res, actualDate := NewMarketNewsApi().GetUplimitHotSmart(date, 20)
+	appendToolMessages(ctx.Messages, ctx.CurrentAIContent.String(), ctx.ReasoningContentText.String(), ctx.CurrentCallID, ctx.FuncName, funcArguments, uplimitToolResponse(actualDate, res))
 	return nil
 }
 

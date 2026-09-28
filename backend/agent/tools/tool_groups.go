@@ -33,6 +33,12 @@ var toolGroupMap = map[string]ToolGroup{
 	"GetNextTradingDay":            GroupBase,
 	"CreateAiRecommendStocks":      GroupBase,
 	"BatchCreateAiRecommendStocks": GroupBase,
+	// 消息推送工具归基础组：无需关键词触发，每次对话对 AI 均可见，
+	// 便于 AI 分析完成后主动推送结论到钉钉/飞书
+	"SendDingDingMessage": GroupBase,
+	"SendToDingDing":      GroupBase,
+	"SendFeishuMessage":   GroupBase,
+	"SendToFeishu":        GroupBase,
 
 	"GetStockInfo":            GroupStockAnalysis,
 	"GetStockOrderBook":       GroupStockAnalysis,
@@ -93,6 +99,11 @@ var toolGroupMap = map[string]ToolGroup{
 	"GetStockHolderTrend":         GroupStockAnalysis,
 	"GetStockBillboard":           GroupStockAnalysis,
 	"GetStockOperationDeptTrade":  GroupStockAnalysis,
+	"GetLhbSeatDetail":            GroupStockAnalysis,
+	"GetPolicyNewsList":           GroupNewsResearch,
+	"GetPolicyNewsDetail":         GroupNewsResearch,
+	"SearchGovPolicyLibrary":      GroupNewsResearch,
+	"GetStockOrgBasicInfo":        GroupStockAnalysis,
 	"ComparableCompanyAnalysis":   GroupStockAnalysis,
 	"HotspotDiscovery":            GroupMarket,
 	"GetIndustryRank":             GroupMarket,
@@ -146,6 +157,9 @@ var toolGroupMap = map[string]ToolGroup{
 	"GetBKFundFlowTopListByDate": GroupMoneyFlow,
 	"GetBKFundFlowList":          GroupMoneyFlow,
 	"GetBKFundFlowListByDate":    GroupMoneyFlow,
+	"GetBkFundFlowRank":          GroupMoneyFlow,
+	"GetBkConstituentStocks":     GroupMoneyFlow,
+	"GetFuturesPosition":         GroupMoneyFlow,
 
 	"QueryStockNewsTool":          GroupNewsResearch,
 	"GetNewsListData":             GroupNewsResearch,
@@ -183,10 +197,6 @@ var toolGroupMap = map[string]ToolGroup{
 	"GetDailyOperationPlanList":      GroupOperations,
 	"UpdateDailyOperationPlan":       GroupOperations,
 	"UpdateDailyOperationPlanStatus": GroupOperations,
-	"SendDingDingMessage":            GroupOperations,
-	"SendToDingDing":                 GroupOperations,
-	"SendFeishuMessage":              GroupOperations,
-	"SendToFeishu":                   GroupOperations,
 	"SearchFund":                     GroupOperations,
 	"GetFundInfo":                    GroupOperations,
 	"GetEconomicData":                GroupOperations,
@@ -210,6 +220,8 @@ var toolGroupMap = map[string]ToolGroup{
 	"BatchAddStocksToConcept": GroupOperations,
 	"MergeStockConcepts":      GroupOperations,
 	"ReorganizeStockGroups":   GroupOperations,
+
+	"MarkdownToImage": GroupOperations,
 
 	"ListPromptTemplates":  GroupBase,
 	"GetPromptTemplate":    GroupBase,
@@ -285,11 +297,13 @@ var groupKeywordsList = []groupKeywords{
 		"资金", "流入", "流出", "净流入", "净流出",
 		"北向", "南向", "沪股通", "深股通", "港股通",
 		"主力", "机构", "外资",
-		"行业资金", "板块资金",
+		"行业资金", "板块资金", "概念资金", "资金流向",
+		"成分股", "板块成分", "概念成分",
 	}},
 	{GroupNewsResearch, []string{
 		"新闻", "资讯", "消息", "公告", "研报", "研究报告",
 		"最新动态", "政策动态", "行业趋势",
+		"政策", "部委", "国务院", "政策利好", "政策利空",
 		"券商", "机构观点", "分析师", "评级",
 		"投资评级", "目标价", "行业分析", "深度分析",
 		"ESG", "信用评级", "主体评级", "基金评级", "券商金股", "业绩预测",
@@ -298,7 +312,7 @@ var groupKeywordsList = []groupKeywords{
 		"公告搜索", "分红公告", "回购公告", "重组公告", "定期报告",
 		"资讯搜索", "金融资讯", "舆情监控", "热点捕捉", "研报速览", "公告精读",
 		"日历", "财报日", "股东大会", "IPO",
-		"龙虎榜", "营业部",
+		"龙虎榜", "营业部", "游资", "席位",
 		"涨停", "连板", "梯队", "涨停复盘", "涨停板块", "炸板", "封板",
 		"热门板块", "板块热度", "板块轮动", "主线题材", "接力板块",
 		"个股热度", "热门个股", "人气股", "关注度",
@@ -323,6 +337,7 @@ var groupKeywordsList = []groupKeywords{
 		"关注", "自选", "加自选", "加入分组", "设置概念", "概念标签", "归类", "持仓", "持仓量",
 		"交易日志", "交易记录", "盈亏",
 		"操作计划", "每日计划", "操作方案", "明日操作", "明天操作", "盘中预警",
+		"生成图片", "转成图片", "转为图片", "导出图片", "保存为图片", "图片形式", "长图", "渲染图片", "markdown转图片",
 	}},
 }
 

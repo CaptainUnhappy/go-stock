@@ -9,7 +9,9 @@ import {
   CheckFrequentTrading,
   GetAllStockInfoList,
   GetStockRealTimePrice,
-  GetConfig
+  GetConfig,
+  ImportTradingRecordsFromExcel,
+  ExportTradingRecordTemplate
 } from '../../wailsjs/go/main/App'
 import {
   NButton,
@@ -520,6 +522,59 @@ function deleteTradingRecord(id) {
     })
 }
 
+const importingRef = ref(false)
+
+// 导入指引弹窗：推荐券商导出 + 模板下载两种方式
+const showImportGuide = ref(false)
+
+function openImportGuide() {
+  showImportGuide.value = true
+}
+
+function confirmImportFromGuide() {
+  showImportGuide.value = false
+  handleImport()
+}
+
+function handleDownloadTemplate() {
+  ExportTradingRecordTemplate()
+    .then((path) => {
+      if (!path) return // 用户取消保存
+      message.success('模板已保存：' + path)
+    })
+    .catch((e) => {
+      message.error(e?.message || '保存模板失败')
+    })
+}
+
+function handleImport() {
+  if (importingRef.value) return
+  importingRef.value = true
+  ImportTradingRecordsFromExcel()
+    .then((res) => {
+      if (!res) {
+        // 用户取消选择文件
+        return
+      }
+      if (res.imported > 0) {
+        notify.success({ content: res.message || '导入完成', duration: 3000 })
+      } else if (res.total === 0) {
+        message.warning('文件中没有可导入的交易记录')
+      } else if (res.imported === 0 && res.failed === 0) {
+        message.info(res.message || '没有新增记录（均已存在）')
+      } else {
+        message.warning(res.message || '导入完成')
+      }
+      handleSearch()
+    })
+    .catch((e) => {
+      message.error(e?.message || '导入交易记录失败')
+    })
+    .finally(() => {
+      importingRef.value = false
+    })
+}
+
 const columnsRef = ref([
   {
     title: '股票代码',
@@ -748,6 +803,7 @@ onUnmounted(() => {
     <n-button type="primary" ghost @click="handleSearch">搜索</n-button>
     <n-button @click="resetFilter">重置</n-button>
     <n-button type="primary" ghost @click="openAddModal">添加记录</n-button>
+    <n-button :loading="importingRef" type="primary" secondary @click="openImportGuide">导入记录</n-button>
   </n-input-group>
 
   <n-grid :cols="7" :x-gap="12" style="margin-top: 12px; padding: 12px; border-radius: 4px">
@@ -1038,6 +1094,33 @@ onUnmounted(() => {
       :longTakeProfitPrice="longTakeProfitPrice"
       :costPrice="costPrice"
     />
+  </n-modal>
+
+  <!-- 导入指引：推荐从券商软件导出历史成交；也支持下载模板手工填写 -->
+  <n-modal v-model:show="showImportGuide" preset="card" title="导入交易记录" style="width: min(560px, 92vw)">
+    <div style="display: flex; flex-direction: column; gap: 12px; text-align: left;">
+      <div>
+        <div style="font-weight: bold; margin-bottom: 4px;">方式一：从券商软件导出（推荐）</div>
+        <div style="color: var(--n-text-color-3, #888); font-size: 13px; line-height: 1.8;">
+          在券商App/PC交易软件中找到「历史成交」或「交割单」（一般在 交易 → 查询 菜单下），
+          选择日期区间后导出为 .xls/.xlsx/.csv 文件（Excel 或表格文本均可），再点击下方「选择文件导入」。
+          支持GBK/UTF-8编码，重复记录会自动跳过，可放心多次导入。
+          <br />
+          东方财富：「查询 → 成交查询」与「查询 → 交割单」两种导出均已适配（兼容 发生日期、买卖标志、业务名称、
+          成交价格、佣金、过户费等列名）；同一批交易请只用一个入口导出，避免被当作两批记录重复入库。
+        </div>
+      </div>
+      <div>
+        <div style="font-weight: bold; margin-bottom: 4px;">方式二：下载模板手工填写</div>
+        <div style="color: var(--n-text-color-3, #888); font-size: 13px; line-height: 1.8;">
+          模板为 Excel（.xlsx）文件，含「使用说明」与「交易记录」两个工作表，按示例格式填写后直接导入。
+        </div>
+      </div>
+      <n-space justify="end" style="margin-top: 4px;">
+        <n-button quaternary @click="handleDownloadTemplate">下载模板</n-button>
+        <n-button type="primary" @click="confirmImportFromGuide">选择文件导入</n-button>
+      </n-space>
+    </div>
   </n-modal>
 </template>
 

@@ -6,13 +6,15 @@ import {MdPreview, MdEditor} from 'md-editor-v3'
 import 'md-editor-v3/lib/preview.css'
 import 'md-editor-v3/lib/style.css'
 import {EventsEmit} from '../../wailsjs/runtime'
+import PlazaAuthModal from './plazaAuthModal.vue'
+import PlazaBindEmailModal from './plazaBindEmailModal.vue'
 
 const message = useMessage()
 const dialog = useDialog()
 
 const darkTheme = ref(false)
 const editorTheme = ref('light')
-const apiBase = ref('http://go-stock.sparkmemory.top:1918/api')
+const apiBase = ref('https://go-stock.sparkmemory.top/api')
 const token = ref(localStorage.getItem('promptPlazaToken') || '')
 const currentUser = ref(null)
 const categories = ref([])
@@ -43,10 +45,11 @@ const detailModal = reactive({
 
 const loginModal = reactive({
   show: false,
-  tab: 'login',
-  username: localStorage.getItem('promptPlazaUsername') || '',
-  password: localStorage.getItem('promptPlazaPassword') || '',
-  nickname: ''
+  tab: 'login'
+})
+
+const bindEmailModal = reactive({
+  show: false
 })
 
 const createModal = reactive({
@@ -173,6 +176,12 @@ async function loadPrompts() {
   }
 }
 
+// 仅当服务端明确表示凭证失效时才清除登录态；网络异常、服务不可用等临时故障不能清 token。
+function isAuthError(e) {
+  const msg = String((e && e.message) || '')
+  return /(^|\D)(401|403)(\D|$)|未登录|请先登录|登录已过期|登录状态.*(失效|无效)|(token|令牌|凭证).*(无效|失效|过期|非法)/i.test(msg)
+}
+
 async function fetchCurrentUser() {
   try {
     const data = await apiGet('/user/me')
@@ -180,9 +189,11 @@ async function fetchCurrentUser() {
     syncVipInfo()
     checkDeviceLimit()
   } catch (e) {
-    token.value = ''
-    localStorage.removeItem('promptPlazaToken')
     currentUser.value = null
+    if (isAuthError(e)) {
+      token.value = ''
+      localStorage.removeItem('promptPlazaToken')
+    }
   }
 }
 
@@ -260,60 +271,37 @@ async function syncVipInfo() {
       console.warn('获取赞助码失败', e)
     }
     await apiPost('/user/vip', body)
+    // 服务端权威校验赞助码后返回实际 VIP 状态（客户端提交的 vipLevel 仅作参考，服务端不信任）
     if (currentUser.value) {
-      currentUser.value.vipLevel = vipLevel
-      currentUser.value.vipExpireAt = vipExpireAt
+      const me = await apiGet('/user/me')
+      currentUser.value.vipLevel = me.vipLevel
+      currentUser.value.vipExpireAt = me.vipExpireAt
     }
   } catch (e) {
     console.warn('同步VIP信息失败', e)
+    // 不再静默吞错：VIP 用户看不到失败原因（如赞助码被其他账号使用/验证失败），
+    // 会误以为"本地是VIP但广场权益丢失"，必须明确提示
+    if (body.sponsorCode) {
+      message.warning('VIP权益同步失败：' + (e.message || '网络异常，请稍后重试'))
+    }
   }
 }
 
-async function handleLogin() {
-  try {
-    const data = await apiPost('/auth/login', {
-      username: loginModal.username,
-      password: loginModal.password
-    })
-    token.value = data.token
-    localStorage.setItem('promptPlazaToken', data.token)
-    localStorage.setItem('promptPlazaUsername', loginModal.username)
-    localStorage.setItem('promptPlazaPassword', loginModal.password)
-    currentUser.value = data.user
-    loginModal.show = false
-    vipRequireLogin.value = false
-    message.success('登录成功')
-    syncVipInfo()
-    checkDeviceLimit()
-    loadPrompts()
-  } catch (e) {
-    message.error('登录失败: ' + e.message)
-  }
+// 登录/注册成功（共享账号弹窗回调）：token 持久化已在弹窗内完成
+async function onPlazaLoggedIn(data) {
+  token.value = data.token
+  currentUser.value = data.user
+  vipRequireLogin.value = false
+  // 登录/注册响应可能不含 email（旧版服务端），拉取完整资料驱动"绑定邮箱"入口显隐
+  // （内部会 syncVipInfo + checkDeviceLimit）
+  fetchCurrentUser()
+  loadPrompts()
 }
 
-async function handleRegister() {
-  try {
-    const data = await apiPost('/auth/register', {
-      username: loginModal.username,
-      password: loginModal.password,
-      nickname: loginModal.nickname
-    })
-    token.value = data.token
-    localStorage.setItem('promptPlazaToken', data.token)
-    localStorage.setItem('promptPlazaUsername', loginModal.username)
-    localStorage.setItem('promptPlazaPassword', loginModal.password)
-    currentUser.value = data.user
-    loginModal.show = false
-    vipRequireLogin.value = false
-    loginModal.username = ''
-    loginModal.password = ''
-    loginModal.nickname = ''
-    message.success('注册成功')
-    syncVipInfo()
-    checkDeviceLimit()
-    loadPrompts()
-  } catch (e) {
-    message.error('注册失败: ' + e.message)
+// 绑定邮箱成功（共享绑定弹窗回调）
+function onEmailBound({email}) {
+  if (currentUser.value) {
+    currentUser.value.email = email
   }
 }
 
@@ -685,6 +673,9 @@ function timeAgo(timeStr) {
               {{ currentUser?.nickname || currentUser?.username || '已登录' }}
               <template v-if="currentUser?.vipLevel >= 1"> · VIP{{ currentUser.vipLevel }}</template>
             </n-tag>
+            <n-tag v-if="!currentUser?.email" size="small" type="warning" round style="cursor: pointer" title="绑定邮箱后可通过邮箱找回密码" @click="bindEmailModal.show = true">
+              📧 绑定邮箱
+            </n-tag>
             <n-button size="small" quaternary @click="handleLogout">退出</n-button>
           </template>
           <template v-else>
@@ -921,36 +912,23 @@ function timeAgo(timeStr) {
       </template>
     </n-modal>
 
-    <n-modal v-model:show="loginModal.show" preset="card" style="width: 400px" :title="vipRequireLogin ? '🎉 VIP专属福利' : '账号'" :closable="!vipRequireLogin" :maskClosable="!vipRequireLogin" :closeOnEsc="!vipRequireLogin">
-      <div v-if="vipRequireLogin" style="margin-bottom: 16px; padding: 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; color: #fff">
-        <div style="font-size: 15px; font-weight: 600; margin-bottom: 8px">✨ 欢迎回来，VIP用户！</div>
-        <div style="font-size: 13px; line-height: 1.6; opacity: 0.95">
-          登录后即可解锁专属权益：
-          <div style="margin-top: 6px; padding-left: 8px">
-            📖 查看 <b>VIP专属提示词</b>，获取更精准的分析策略<br/>
-            🔒 自动绑定当前设备，保障账号安全<br/>
-            💡 与社区用户共享投资灵感
-          </div>
-        </div>
-      </div>
-      <n-tabs v-model:value="loginModal.tab" type="line">
-        <n-tab-pane name="login" tab="登录">
-          <n-space vertical :size="12">
-            <n-input v-model:value="loginModal.username" placeholder="用户名" />
-            <n-input v-model:value="loginModal.password" type="password" placeholder="密码" show-password-on="click" />
-            <n-button type="primary" block @click="handleLogin">登录</n-button>
-          </n-space>
-        </n-tab-pane>
-        <n-tab-pane name="register" tab="注册">
-          <n-space vertical :size="12">
-            <n-input v-model:value="loginModal.username" placeholder="用户名 (3-50字)" />
-            <n-input v-model:value="loginModal.password" type="password" placeholder="密码 (6字以上)" show-password-on="click" />
-            <n-input v-model:value="loginModal.nickname" placeholder="昵称 (可选)" />
-            <n-button type="primary" block @click="handleRegister">注册</n-button>
-          </n-space>
-        </n-tab-pane>
-      </n-tabs>
-    </n-modal>
+    <!-- 登录/注册/忘记密码（共享组件） -->
+    <PlazaAuthModal
+      v-model:show="loginModal.show"
+      v-model:tab="loginModal.tab"
+      :api-base="apiBase"
+      :vip-require-login="vipRequireLogin"
+      @logged-in="onPlazaLoggedIn"
+    />
+
+    <!-- 绑定邮箱（共享组件，未绑定邮箱的旧账号） -->
+    <PlazaBindEmailModal
+      v-model:show="bindEmailModal.show"
+      :api-base="apiBase"
+      :token="token"
+      :username="currentUser?.username || ''"
+      @bound="onEmailBound"
+    />
 
     <n-modal v-model:show="createModal.show" preset="card" style="width: 1100px; max-width: 95vw" title="发布提示词">
       <n-space vertical :size="12">

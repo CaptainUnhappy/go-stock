@@ -7,8 +7,8 @@ import {
   ExportConfig,
   GetConfig,
   GetPromptTemplates,
-  SendDingDingMessageByType,
-  SendFeishuMessageByType,
+  TestDingDingNotice,
+  TestFeishuNotice,
   StartFeishuBot,
   StopFeishuBot,
   GetFeishuBotStatus,
@@ -48,6 +48,7 @@ const formValue = ref({
     sysPromptId: 0,
     enableTools: true,
     thinking: false,
+    memoryEnable: false,
     agentMode: 'react',
     status: 'stopped'
   },
@@ -57,7 +58,7 @@ const formValue = ref({
   updateBasicInfoOnStart: false,
   refreshInterval: 1,
   openAI: {
-    enable: false,
+    enable: true, // AI诊股默认开启
     aiConfigs: [], // AI配置列表
     prompt: "",
     questionTemplate: "{{stockName}}分析和总结",
@@ -79,7 +80,8 @@ const formValue = ref({
   enableAgent: false,
   qgqpBId: '',
   updateChannel: 'release',
-  promptPlazaApiBase: '',
+  // 广场服务地址固定（定制版不可修改）
+  promptPlazaApiBase: 'https://go-stock.sparkmemory.top/api',
 })
 
 const updateChannelOptions = [
@@ -119,6 +121,7 @@ onMounted(() => {
       sysPromptId: res.feishuBotSysPromptId || 0,
       enableTools: res.feishuBotEnableTools !== false,
       thinking: res.feishuBotThinking === true,
+      memoryEnable: res.feishuBotMemoryEnable === true,
       agentMode: res.feishuBotAgentMode || 'react',
       status: 'stopped'
     }
@@ -153,7 +156,8 @@ onMounted(() => {
     formValue.value.enableAgent = res.enableAgent;
     formValue.value.qgqpBId = res.qgqpBId;
     formValue.value.updateChannel = res.updateChannel || 'release';
-    formValue.value.promptPlazaApiBase = res.promptPlazaApiBase || '';
+    // 广场服务地址固定（定制版不可修改），后端 GetSettingConfig 始终返回固定值，此处兜底
+    formValue.value.promptPlazaApiBase = res.promptPlazaApiBase || 'https://go-stock.sparkmemory.top/api';
 
   })
 
@@ -181,6 +185,7 @@ function saveConfig() {
     feishuBotSysPromptId: formValue.value.feishuBot.sysPromptId,
     feishuBotEnableTools: formValue.value.feishuBot.enableTools,
     feishuBotThinking: formValue.value.feishuBot.thinking,
+    feishuBotMemoryEnable: formValue.value.feishuBot.memoryEnable,
     feishuBotAgentMode: formValue.value.feishuBot.agentMode,
     localPushEnable: formValue.value.localPush.enable,
     updateBasicInfoOnStart: formValue.value.updateBasicInfoOnStart,
@@ -207,7 +212,8 @@ function saveConfig() {
     enableAgent: formValue.value.enableAgent,
     qgqpBId: formValue.value.qgqpBId,
     updateChannel: formValue.value.updateChannel,
-    promptPlazaApiBase: formValue.value.promptPlazaApiBase,
+    // 广场服务地址固定值（后端 UpdateConfig 也会强制覆盖）
+    promptPlazaApiBase: 'https://go-stock.sparkmemory.top/api',
   })
 
   if (config.sponsorCode) {
@@ -234,24 +240,42 @@ function getHeight() {
 }
 
 function sendTestNotice() {
-  let markdown = "### go-stock test\n" + new Date()
-  let msg = '{' +
-      '     "msgtype": "markdown",' +
-      '     "markdown": {' +
-      '         "title":"go-stock' + new Date() + '",' +
-      '         "text": "' + markdown + '"' +
-      '     },' +
-      '      "at": {' +
-      '          "isAtAll": true' +
-      '      }' +
-      ' }'
+  // 测试通知使用页面上当前填写的机器人地址，不依赖已保存的数据库配置
+  const robot = (formValue.value.dingPush.dingRobot || '').trim()
+  if (!robot) {
+    message.warning('请先填写钉钉机器人地址')
+    return
+  }
+  const now = new Date()
+  // 必须用 JSON.stringify 生成合法 JSON：手工拼串中的换行会破坏 JSON，钉钉返回 40035
+  const msg = JSON.stringify({
+    msgtype: "markdown",
+    markdown: {
+      title: "go-stock " + now,
+      text: "### go-stock test\n" + now
+    },
+    at: {
+      isAtAll: true
+    }
+  })
 
-  SendDingDingMessageByType(msg, "test-" + new Date().getTime(), 1).then(res => {
-    message.info(res)
+  TestDingDingNotice(msg, robot).then(res => {
+    if (res && res.includes('失败')) {
+      message.error(res)
+    } else {
+      message.info(res)
+    }
   })
 }
 
 function sendFeishuTestNotice() {
+  // 测试通知使用页面上当前填写的机器人地址与签名密钥，不依赖已保存的数据库配置
+  const robot = (formValue.value.feishuPush.feishuRobot || '').trim()
+  if (!robot) {
+    message.warning('请先填写飞书机器人地址')
+    return
+  }
+  const secret = (formValue.value.feishuPush.feishuSecret || '').trim()
   let markdown = "### go-stock 飞书测试\n" + new Date()
   // 飞书卡片 JSON 2.0 协议：schema="2.0" + body.elements + markdown 元素
   // 文档：https://open.feishu.cn/document/feishu-cards/card-json-v2-components/content-components/rich-text
@@ -276,8 +300,12 @@ function sendFeishuTestNotice() {
     }
   })
 
-  SendFeishuMessageByType(msg, "test-feishu-" + new Date().getTime(), 1).then(res => {
-    message.info(res)
+  TestFeishuNotice(msg, robot, secret).then(res => {
+    if (res && res.includes('失败')) {
+      message.error(res)
+    } else {
+      message.info(res)
+    }
   })
 }
 
@@ -393,6 +421,7 @@ function importConfig() {
         sysPromptId: config.feishuBotSysPromptId || 0,
         enableTools: config.feishuBotEnableTools !== false,
         thinking: config.feishuBotThinking === true,
+        memoryEnable: config.feishuBotMemoryEnable === true,
         agentMode: config.feishuBotAgentMode || 'react',
         status: formValue.value.feishuBot.status || 'stopped'
       }
@@ -632,32 +661,41 @@ function deletePrompt(ID) {
               </n-tooltip>
             </n-form-item-gi>
 
-            <n-form-item-gi :span="11" label="赞助码：" path="sponsorCode">
-              <n-input-group>
-                <n-input :show-count="true" placeholder="联系作者QQ或微信获取，激活VIP功能" v-model:value="formValue.sponsorCode">
-                </n-input>
-                <n-button type="success" secondary strong
-                          @click="CheckSponsorCode(formValue.sponsorCode).then((res) => {message.warning(res.msg)})">验证
-                </n-button>
-                <n-popover trigger="hover" placement="top">
-                  <template #trigger>
-                    <n-icon color="#0e7a0d" size="20">
-                      <HelpCircleFilledIcon />
-                    </n-icon>
-                  </template>
-                  <n-gradient-text :type="'warning'">
-                    <div style="max-width: 400px;text-align: left">
-                      赞助码获取方式：<br>
-                      联系作者获取赞助码，激活VIP功能<br>
-                      享受更多高级功能和优先支持
-                    </div>
-                  </n-gradient-text>
-                </n-popover>
-              </n-input-group>
+            <n-form-item-gi :span="24" path="sponsorCode" class="sponsor-code-item">
+              <div class="sponsor-code-box">
+                <div class="sponsor-code-label">
+                  <n-tag type="warning" size="small" :bordered="false" round>👑 VIP</n-tag>
+                  <span class="sponsor-code-label-text">赞助码</span>
+                  <span class="sponsor-code-label-sub">填写后激活 VIP 高级功能</span>
+                </div>
+                <n-input-group>
+                  <n-input size="large" :show-count="true" class="sponsor-code-input"
+                           placeholder="💎 联系作者QQ或微信获取赞助码，激活VIP功能"
+                           v-model:value="formValue.sponsorCode">
+                  </n-input>
+                  <n-button size="large" type="warning" strong
+                            @click="CheckSponsorCode(formValue.sponsorCode).then((res) => {message.warning(res.msg)})">立即验证
+                  </n-button>
+                  <n-popover trigger="hover" placement="top">
+                    <template #trigger>
+                      <n-icon color="#f0a020" size="22">
+                        <HelpCircleFilledIcon />
+                      </n-icon>
+                    </template>
+                    <n-gradient-text :type="'warning'">
+                      <div style="max-width: 400px;text-align: left">
+                        赞助码获取方式：<br>
+                        联系作者获取赞助码，激活VIP功能<br>
+                        享受更多高级功能和优先支持
+                      </div>
+                    </n-gradient-text>
+                  </n-popover>
+                </n-input-group>
+              </div>
             </n-form-item-gi>
 
             <n-form-item-gi :span="11" label="提示词广场地址：" path="promptPlazaApiBase">
-              <n-input type="text" placeholder="http://go-stock.sparkmemory.top:1918/api" v-model:value="formValue.promptPlazaApiBase" clearable/>
+              <n-input type="text" v-model:value="formValue.promptPlazaApiBase" disabled/>
               <n-tooltip placement="top">
                 <template #trigger>
                   <n-icon color="#0e7a0d" size="20">
@@ -667,9 +705,7 @@ function deletePrompt(ID) {
                 <template #default>
                   <n-gradient-text :type="'warning'">
                   <div style="max-width: 400px;text-align: left">
-                    提示词广场服务接口地址<br>
-                    默认: http://go-stock.sparkmemory.top:1918/api<br>
-                    如已部署提示词广场服务，可修改为实际地址
+                    提示词广场服务接口地址（固定配置，不可修改）
                   </div>
                   </n-gradient-text>
                 </template>
@@ -774,6 +810,14 @@ function deletePrompt(ID) {
               <n-switch v-model:value="formValue.feishuBot.thinking"/>
               <n-text depth="3" style="margin-left: 12px; font-size: 12px;">
                 推理模型启用后输出思考过程
+              </n-text>
+            </n-form-item-gi>
+
+            <n-form-item-gi :span="6" v-if="formValue.feishuBot.enable" label="多轮记忆"
+                            path="feishuBot.memoryEnable">
+              <n-switch v-model:value="formValue.feishuBot.memoryEnable"/>
+              <n-text depth="3" style="margin-left: 12px; font-size: 12px;">
+                开启后携带最近一轮对话上下文
               </n-text>
             </n-form-item-gi>
 
@@ -914,5 +958,51 @@ function deletePrompt(ID) {
   font-size: 16px;
   font-weight: bold;
   color: red;
+}
+
+/* 赞助码醒目样式 */
+.sponsor-code-item :deep(.n-form-item-blank) {
+  display: block;
+  width: 100%;
+}
+
+.sponsor-code-box {
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(240, 160, 32, 0.10), rgba(240, 160, 32, 0.03));
+  border: 1.5px dashed rgba(240, 160, 32, 0.55);
+  box-shadow: 0 2px 10px rgba(240, 160, 32, 0.12);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.sponsor-code-box:hover,
+.sponsor-code-box:focus-within {
+  border-color: #f0a020;
+  border-style: solid;
+  box-shadow: 0 2px 14px rgba(240, 160, 32, 0.35);
+}
+
+.sponsor-code-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.sponsor-code-label-text {
+  font-size: 16px;
+  font-weight: bold;
+  color: #f0a020;
+}
+
+.sponsor-code-label-sub {
+  font-size: 12px;
+  color: rgba(240, 160, 32, 0.75);
+}
+
+.sponsor-code-input :deep(.n-input__input-el) {
+  font-weight: 600;
+  letter-spacing: 1px;
 }
 </style>

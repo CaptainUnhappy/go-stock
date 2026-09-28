@@ -138,3 +138,7 @@ scripts/__pycache__/
 *.vue.[0-9]*
 build/handoff/
 quant/
+/scripts/upload-release-to-minio.py
+/build-custom.bat
+
+*/__pycache__/*

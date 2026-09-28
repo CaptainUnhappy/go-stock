@@ -37,6 +37,16 @@ const (
 	providerDeepSeek
 )
 
+// maxOllamaNumCtx Ollama num_ctx 解析值（非用户显式配置）的默认上限。
+// KV cache 显存占用随 num_ctx 线性增长，resolveContextWindow 对未知模型兜底
+// 64000，直接透传可能撑爆本地显存/内存导致加载失败或推理骤降。
+const maxOllamaNumCtx = 32768
+
+// minOllamaNumCtx Ollama num_ctx 解析值的下限。旧配置兜底路径可能把小
+// MaxTokens（如 100）误判为上下文窗口，透传会造成灾难性头部截断；Agent 的
+// 工具 schema 本身就需要约 8k token，低于此值 Agent 无法正常工作。
+const minOllamaNumCtx = 8192
+
 func normalizeBaseURL(base string) string {
 	return strings.TrimSuffix(strings.TrimSpace(base), "/")
 }
@@ -44,6 +54,45 @@ func normalizeBaseURL(base string) string {
 func normalizeChatModelBaseURL(base string) string {
 	base = normalizeBaseURL(base)
 	return strings.TrimSuffix(base, "/chat/completions")
+}
+
+// normalizeOllamaBaseURL 归一化 Ollama 原生 API 的 BaseURL。
+//
+// Ollama 原生 API 端点固定在根路径（/api/chat、/api/generate），用户可能误填
+// OpenAI 风格路径（如 /v1 或 /v1/chat/completions），导致 url.JoinPath 拼出
+// /v1/api/chat 等不存在的端点，返回 Gin 默认 404 "404 page not found"。
+// eino-contrib/ollama 的 stream 函数逐行 JSON 反序列化时，"404" 被解析为
+// 有效 JSON 数字，随后的 'p'（page）触发 "invalid character 'p' after top-level value"。
+func normalizeOllamaBaseURL(base string) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return "http://127.0.0.1:11434"
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return strings.TrimSuffix(base, "/")
+	}
+	path := u.Path
+	// 迭代剥离已知的 OpenAI 风格路径后缀（先去尾斜杠再匹配，支持多层组合）
+	for {
+		path = strings.TrimSuffix(path, "/")
+		switch {
+		case strings.HasSuffix(path, "/chat/completions"):
+			path = strings.TrimSuffix(path, "/chat/completions")
+		case path == "/v1" || strings.HasSuffix(path, "/v1"):
+			path = strings.TrimSuffix(path, "/v1")
+		default:
+			goto done
+		}
+	}
+done:
+	u.Path = path
+	u.RawPath = ""
+	result := u.String()
+	if result != base {
+		logger.SugaredLogger.Infof("normalizeOllamaBaseURL: %q -> %q (已剥离 OpenAI 风格路径后缀)", base, result)
+	}
+	return result
 }
 
 func detectChatModelProvider(baseLower, modelName string) chatModelProvider {
@@ -121,10 +170,16 @@ func createChatModel(ctx context.Context, aiConfig data.AIConfig) (model.ToolCal
 	if timeout <= 0 {
 		timeout = 300 * time.Second
 	}
-	maxTok := aiConfig.MaxTokens
-	if maxTok <= 0 {
-		maxTok = 4096
+
+	// 输出 token 上限：通过 resolveOutputMaxTokens 解析，确保不超过上下文窗口。
+	// resolveOutputMaxTokens 优先用 aiConfig.MaxTokens（若 < contextWindow），
+	// 其次内置模型表，最后安全默认。resolveContextWindow 同理解析上下文窗口。
+	contextWindow := resolveContextWindow(aiConfig)
+	resolvedOutput := resolveOutputMaxTokens(aiConfig, contextWindow)
+	if resolvedOutput > contextWindow {
+		resolvedOutput = contextWindow / 2 // 安全兜底：至少留一半给输入
 	}
+	outputMaxTokens := &resolvedOutput
 
 	p := detectChatModelProvider(baseLower, aiConfig.ModelName)
 	logger.SugaredLogger.Infof("createChatModel provider=%d base=%q model=%q", p, aiConfig.BaseUrl, aiConfig.ModelName)
@@ -139,7 +194,7 @@ func createChatModel(ctx context.Context, aiConfig data.AIConfig) (model.ToolCal
 			BaseURL:     baseURL,
 			Model:       aiConfig.ModelName,
 			APIKey:      aiConfig.ApiKey,
-			MaxTokens:   &maxTok,
+			MaxTokens:   outputMaxTokens,
 			Temperature: &temperature,
 			Thinking:    thinking,
 			Timeout:     &timeout,
@@ -150,8 +205,8 @@ func createChatModel(ctx context.Context, aiConfig data.AIConfig) (model.ToolCal
 			APIKey:    aiConfig.ApiKey,
 			BaseURL:   baseURL,
 			Model:     aiConfig.ModelName,
+			MaxTokens: outputMaxTokens,
 			Timeout:   timeout,
-			MaxTokens: &maxTok,
 		}
 		if aiConfig.Temperature > 0 {
 			cfg.Temperature = ptrFloat32(temperature)
@@ -166,8 +221,8 @@ func createChatModel(ctx context.Context, aiConfig data.AIConfig) (model.ToolCal
 			APIKey:    aiConfig.ApiKey,
 			BaseURL:   baseURL,
 			Model:     aiConfig.ModelName,
+			MaxTokens: outputMaxTokens,
 			Timeout:   timeout,
-			MaxTokens: &maxTok,
 		}
 		if aiConfig.Temperature > 0 {
 			cfg.Temperature = ptrFloat32(temperature)
@@ -179,9 +234,11 @@ func createChatModel(ctx context.Context, aiConfig data.AIConfig) (model.ToolCal
 		return openrouter.NewChatModel(ctx, cfg)
 
 	case providerAnthropic:
-		maxOut := aiConfig.MaxTokens
-		if maxOut <= 0 {
-			maxOut = 8192
+		// Anthropic API 强制要求 max_tokens（无模型默认值）。推理模型思考内容占用
+		// 大量输出预算，故适当调高上限，避免最终回答被截断。
+		maxOut := 8000
+		if outputMaxTokens != nil {
+			maxOut = *outputMaxTokens
 		}
 		cfg := &claude.Config{
 			APIKey:    aiConfig.ApiKey,
@@ -203,14 +260,31 @@ func createChatModel(ctx context.Context, aiConfig data.AIConfig) (model.ToolCal
 		return claude.NewChatModel(ctx, cfg)
 
 	case providerOllama:
-		base := strings.TrimSpace(aiConfig.BaseUrl)
-		if base == "" {
-			base = "http://127.0.0.1:11434"
-		}
+		base := normalizeOllamaBaseURL(aiConfig.BaseUrl)
 		opt := &ollamaapi.Options{}
 		if aiConfig.Temperature > 0 {
 			opt.Temperature = temperature
 		}
+		// num_ctx：Ollama 默认上下文仅 4096，而 Agent 注入的工具 schema + 系统提示
+		// 轻松超过 8000 token，超出部分被 Ollama 静默截断（丢弃最头部内容，即系统
+		// 提示与工具定义），表现为模型无视指令、工具调用格式错乱等诡异行为。
+		// 显式透传上下文窗口，与 React/PlanExecute/DeepAgents 的 token 预算计算对齐：
+		//   - 用户显式配置 ContextWindow > 0：直接使用（用户了解自己硬件，不设上限）
+		//   - 否则用解析值（内置表/旧 MaxTokens/默认 64000），但封顶 maxOllamaNumCtx
+		opt.NumCtx = aiConfig.ContextWindow
+		if opt.NumCtx <= 0 {
+			opt.NumCtx = contextWindow
+			if opt.NumCtx > maxOllamaNumCtx {
+				opt.NumCtx = maxOllamaNumCtx
+			}
+			if opt.NumCtx < minOllamaNumCtx {
+				opt.NumCtx = minOllamaNumCtx
+			}
+		}
+		// num_predict：输出上限与云端 max_tokens 语义对齐，避免单轮输出挤占上下文
+		opt.NumPredict = resolvedOutput
+		logger.SugaredLogger.Infof("createChatModel ollama: num_ctx=%d num_predict=%d (config_ctx=%d resolved_ctx=%d)",
+			opt.NumCtx, opt.NumPredict, aiConfig.ContextWindow, contextWindow)
 		cfg := &ollama.ChatModelConfig{
 			BaseURL: base,
 			Model:   aiConfig.ModelName,
@@ -236,11 +310,11 @@ func createChatModel(ctx context.Context, aiConfig data.AIConfig) (model.ToolCal
 			Client: client,
 			Model:  aiConfig.ModelName,
 		}
-		if maxTok > 0 {
-			gcfg.MaxTokens = &maxTok
-		}
 		if aiConfig.Temperature > 0 {
 			gcfg.Temperature = ptrFloat32(temperature)
+		}
+		if outputMaxTokens != nil {
+			gcfg.MaxTokens = outputMaxTokens
 		}
 		if aiConfig.Thinking {
 			gcfg.ThinkingConfig = &genai.ThinkingConfig{IncludeThoughts: true}
@@ -248,16 +322,40 @@ func createChatModel(ctx context.Context, aiConfig data.AIConfig) (model.ToolCal
 		return gemini.NewChatModel(ctx, gcfg)
 
 	case providerDeepSeek:
+		// 视觉模型改走 OpenAI 兼容组件：eino-ext deepseek 专用组件（v0.1.7）不支持下发
+		// image_url 内容块（UserInputMultiContent 被拼接为纯文本，图片丢失），而 DeepSeek
+		// API 完全 OpenAI 兼容（参考 https://api-docs.deepseek.com/zh-cn/guides/vision/），
+		// OpenAI 兼容组件可将 UserInputMultiContent 转为标准 vision 内容块。
+		if aiConfig.SupportVision {
+			cfg := &einoopenai.ChatModelConfig{
+				BaseURL:     baseURL,
+				Model:       aiConfig.ModelName,
+				APIKey:      aiConfig.ApiKey,
+				MaxTokens:   outputMaxTokens,
+				Timeout:     timeout,
+				Temperature: &temperature,
+			}
+			if httpClient := buildChatModelHTTPClient(timeout, aiConfig.ExtraHeaders, aiConfig.SessionId); httpClient != nil {
+				cfg.HTTPClient = httpClient
+			}
+			logger.SugaredLogger.Infof("createChatModel: deepseek vision model %q uses OpenAI-compatible component", aiConfig.ModelName)
+			return einoopenai.NewChatModel(ctx, cfg)
+		}
+		// deepseek 的 MaxTokens 为 int,omitempty：0 时字段被省略 → 走 API 默认。
+		var dsMax int
+		if outputMaxTokens != nil {
+			dsMax = *outputMaxTokens
+		}
 		deepseekCfg := &deepseek.ChatModelConfig{
 			BaseURL:     baseURL,
 			Model:       aiConfig.ModelName,
 			APIKey:      aiConfig.ApiKey,
-			MaxTokens:   maxTok,
+			MaxTokens:   dsMax,
 			Temperature: temperature,
 			Timeout:     timeout,
 		}
-		if proxyClient := buildProxyHTTPClient(timeout); proxyClient != nil {
-			deepseekCfg.HTTPClient = proxyClient
+		if httpClient := buildChatModelHTTPClient(timeout, aiConfig.ExtraHeaders, aiConfig.SessionId); httpClient != nil {
+			deepseekCfg.HTTPClient = httpClient
 		}
 		return deepseek.NewChatModel(ctx, deepseekCfg)
 
@@ -270,13 +368,13 @@ func createChatModel(ctx context.Context, aiConfig data.AIConfig) (model.ToolCal
 			BaseURL:     baseURL,
 			Model:       aiConfig.ModelName,
 			APIKey:      aiConfig.ApiKey,
+			MaxTokens:   outputMaxTokens,
 			Timeout:     timeout,
-			MaxTokens:   &maxTok,
 			Temperature: &temperature,
 			ExtraFields: extraFields,
 		}
-		if proxyClient := buildProxyHTTPClient(timeout); proxyClient != nil {
-			cfg.HTTPClient = proxyClient
+		if httpClient := buildChatModelHTTPClient(timeout, aiConfig.ExtraHeaders, aiConfig.SessionId); httpClient != nil {
+			cfg.HTTPClient = httpClient
 		}
 		return einoopenai.NewChatModel(ctx, cfg)
 	}
@@ -299,4 +397,80 @@ func buildProxyHTTPClient(timeout time.Duration) *http.Client {
 		},
 		Timeout: timeout,
 	}
+}
+
+// headerInjectTransport 包装 http.RoundTripper，在每次请求时注入自定义 Header
+// （支持模板变量展开，如 {{sessionId}}、{{uuid}}）。
+type headerInjectTransport struct {
+	base      http.RoundTripper
+	headers   map[string]string // 含模板变量的原始 header 值
+	sessionId string
+}
+
+func (t *headerInjectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	cloned := req.Clone(req.Context())
+	for k, v := range t.headers {
+		cloned.Header.Set(k, data.ExpandHeaderVars(v, t.sessionId))
+	}
+	return t.base.RoundTrip(cloned)
+}
+
+// buildChatModelHTTPClient 构建同时支持代理和自定义 Header 注入的 HTTP 客户端。
+// 若两者均未配置则返回 nil。extraHeaders 为 JSON 格式字符串，sessionId 用于模板变量展开。
+func buildChatModelHTTPClient(timeout time.Duration, extraHeaders, sessionId string) *http.Client {
+	headers := data.ParseHeaders(extraHeaders)
+	hasHeaders := len(headers) > 0
+
+	config := data.GetSettingConfig()
+	hasProxy := config != nil && config.HttpProxyEnabled && config.HttpProxy != ""
+
+	// Always provide an explicit transport. Returning nil here lets the model SDK
+	// fall back to http.DefaultTransport, whose ProxyFromEnvironment behavior can
+	// silently route Feishu/agent requests through HTTP_PROXY or HTTPS_PROXY even
+	// when the application proxy is disabled.
+	configuredTransport, err := newChatModelTransport(hasProxy, func() string {
+		if config == nil {
+			return ""
+		}
+		return config.HttpProxy
+	}())
+	if err != nil {
+		logger.SugaredLogger.Warnf("解析HTTP代理失败: %v", err)
+	}
+
+	var roundTripper http.RoundTripper = configuredTransport
+	if hasHeaders {
+		roundTripper = &headerInjectTransport{
+			base:      roundTripper,
+			headers:   headers,
+			sessionId: sessionId,
+		}
+	}
+
+	return &http.Client{
+		Transport: roundTripper,
+		Timeout:   timeout,
+	}
+}
+
+// newChatModelTransport clones the standard transport but clears its
+// environment-derived proxy. An application proxy is opt-in via settings.
+func newChatModelTransport(proxyEnabled bool, proxyURL string) (*http.Transport, error) {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		base = &http.Transport{}
+	}
+	transport := base.Clone()
+	transport.Proxy = nil
+
+	if !proxyEnabled || strings.TrimSpace(proxyURL) == "" {
+		return transport, nil
+	}
+
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return transport, err
+	}
+	transport.Proxy = http.ProxyURL(parsed)
+	return transport, nil
 }

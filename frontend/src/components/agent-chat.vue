@@ -42,6 +42,11 @@
             :operation-btn="['copy']"
             @operation="handleOperation"
         />
+        <span v-if="item.role === 'assistant' && !item.feedback" class="feedback-btns">
+          <t-button size="small" variant="text" title="这个回答有用" @click="submitFeedback(item, 1)">👍</t-button>
+          <t-button size="small" variant="text" title="这个回答没用" @click="openFeedbackDialog(item)">👎</t-button>
+        </span>
+        <span v-else-if="item.role === 'assistant' && item.feedback" class="feedback-done">{{ item.feedback === 1 ? '👍' : '👎' }}</span>
       </template>
       <template #footer>
 <!--        <t-chat-input :stop-disabled="isStreamLoad" @send="inputEnter" @stop="onStop"> </t-chat-input>-->
@@ -87,6 +92,36 @@
         <ArrowDownIcon />
       </div>
     </t-button>
+
+    <!-- 👎 反馈理由弹窗：采集纠正原因，供画像学习"需规避项/偏好格式" -->
+    <n-modal
+      v-model:show="feedbackDialogShow"
+      preset="dialog"
+      title="这个回答哪里不行？"
+      positive-text="提交反馈"
+      negative-text="跳过"
+      @positive-click="confirmFeedbackSubmit"
+      @negative-click="submitFeedbackSkip"
+      @close="submitFeedbackSkip"
+    >
+      <div style="display:flex; flex-direction:column; gap:8px; text-align:left;">
+        <n-select
+          v-model:value="feedbackReasonPreset"
+          :options="feedbackReasonOptions"
+          placeholder="选择主要问题（可选）"
+          clearable
+          size="small"
+        />
+        <n-input
+          v-model:value="feedbackReasonText"
+          type="textarea"
+          placeholder="补充说明（可选，例如：没结合我的持仓成本）"
+          :rows="2"
+          maxlength="200"
+          show-count
+        />
+      </div>
+    </n-modal>
   </div>
 </template>
 <script setup lang="ts">
@@ -105,7 +140,8 @@ const isShowToBottom = ref(false);
 
 const icon = ref('https://raw.githubusercontent.com/ArvinLovegood/go-stock/master/build/appicon.png');
 import {darkTheme, NFlex, NImage,NSelect} from "naive-ui";
-import {ChatWithAgent, GetAiConfigs, GetConfig, GetSponsorInfo, GetVersionInfo} from "../../wailsjs/go/main/App";
+import {ChatWithAgent, GetAiConfigs, GetConfig, GetSponsorInfo, GetVersionInfo, SubmitAgentFeedback} from "../../wailsjs/go/main/App";
+import {models} from '../../wailsjs/go/models';
 import {EventsOff, EventsOn} from '../../wailsjs/runtime'
 import 'tdesign-vue-next/es/style/index.css';
 
@@ -114,7 +150,7 @@ const allowToolTip = ref(true);
 const chatSenderRef = ref(null);
 const selectOptions = ref([]);
 const selectValue = ref("default");
-const agentMode = ref('auto')
+const agentMode = ref('deepagents')
 const agentModeOptions = [
   { label: '🤖 自动', value: 'auto' },
   { label: '⚡ 快速', value: 'react' },
@@ -464,6 +500,66 @@ const clearConfirm = function () {
 const handleOperation = function (type, options) {
   console.log('handleOperation', type, options);
 };
+
+// 提交对某条回答的反馈（👍 直接提交；👎 先弹理由框，可跳过）
+const submitFeedback = function (item, rating, reason = '') {
+  if (!item) return;
+  const fb = models.AgentFeedback.createFrom({
+    sessionId: '',
+    question: item.question || '',
+    response: item.rawContent || item.content || '',
+    rating: rating,
+    reason: reason,
+    mode: agentMode.value === 'auto' ? '' : agentMode.value,
+  });
+  SubmitAgentFeedback(fb).then(() => {
+    item.feedback = rating;
+    window.$message && window.$message.success(rating === 1 ? '感谢反馈，我会继续优化' : '已收到，我会改进');
+  }).catch((e) => {
+    console.error('submit feedback error', e);
+  });
+};
+
+// ---- 👎 理由弹窗 ----
+const feedbackDialogShow = ref(false);
+const feedbackReasonPreset = ref(null);
+const feedbackReasonText = ref('');
+const feedbackTargetItem = ref(null);
+// 预设理由选项：与 user-profile.vue 的 classifyFeedbackReason 分类对应，便于画像学习归类
+const feedbackReasonOptions = [
+  {label: '数据不准 / 过时', value: '数据不准'},
+  {label: '逻辑推理有误', value: '逻辑有误'},
+  {label: '太啰嗦 / 格式不佳', value: '太啰嗦'},
+  {label: '风险提示不合我的风格', value: '风险偏好不符'},
+  {label: '没结合我的持仓 / 关注', value: '没结合我的持仓'},
+];
+
+function openFeedbackDialog(item) {
+  if (!item) return;
+  feedbackTargetItem.value = item;
+  feedbackReasonPreset.value = null;
+  feedbackReasonText.value = '';
+  feedbackDialogShow.value = true;
+}
+
+// 拼接预设 + 自由文本
+function buildFeedbackReason() {
+  return [feedbackReasonPreset.value, feedbackReasonText.value.trim()]
+    .filter(Boolean).join('；')
+}
+
+function confirmFeedbackSubmit() {
+  const item = feedbackTargetItem.value;
+  feedbackDialogShow.value = false;
+  if (item) submitFeedback(item, -1, buildFeedbackReason());
+}
+
+// 跳过：不填理由直接提交 👎
+function submitFeedbackSkip() {
+  const item = feedbackTargetItem.value;
+  feedbackDialogShow.value = false;
+  if (item) submitFeedback(item, -1, '');
+}
 // 倒序渲染
 const chatList = ref([
   // {
@@ -534,6 +630,8 @@ const inputEnter = function () {
     reasoning: '',
     rawReasoning: '',
     jsonMarkdown: '',
+    question: inputValue.value,
+    feedback: 0,
     role: 'assistant',
   };
   chatList.value.unshift(params2);
@@ -541,7 +639,7 @@ const inputEnter = function () {
   isStreamLoad.value = true;
   startFormatTimer()
   jsonMdExpandedMap.value = { ...jsonMdExpandedMap.value, [0]: true }
-  ChatWithAgent(inputValue.value,selectValue.value,0,false,0,false,agentMode.value === 'auto' ? '' : agentMode.value)
+  ChatWithAgent(inputValue.value,selectValue.value,0,false,0,false,agentMode.value === 'auto' ? '' : agentMode.value,'','')
 };
 </script>
 <style lang="less">
@@ -560,6 +658,18 @@ const inputEnter = function () {
   height: 100%;
   margin: 5px 10px 5px 10px;
   text-align: left;
+  .feedback-btns {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: 4px;
+    vertical-align: middle;
+  }
+  .feedback-done {
+    margin-left: 6px;
+    opacity: 0.7;
+    vertical-align: middle;
+  }
   .bottomBtn {
     position: absolute;
     left: 50%;

@@ -1,8 +1,9 @@
 package data
 
 import (
-	"go-stock/backend/db"
 	"testing"
+
+	"go-stock/backend/db"
 )
 
 func init() {

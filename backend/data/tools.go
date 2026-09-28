@@ -236,6 +236,10 @@ func Tools(tools []Tool) []Tool {
 		Function: ToolFunction{
 			Name:        "HotStrategyTable",
 			Description: "获取当前热门选股策略",
+			Parameters: &FunctionParameters{
+				Type:       "object",
+				Properties: map[string]any{},
+			},
 		},
 	})
 
@@ -521,6 +525,34 @@ func Tools(tools []Tool) []Tool {
 	tools = append(tools, Tool{
 		Type: "function",
 		Function: ToolFunction{
+			Name: "GetFuturesPosition",
+			Description: "获取股指期货（IF沪深300/IH上证50/IC中证500/IM中证1000）前20名会员的多空单持仓趋势，" +
+				"包括多单/空单持仓量及增减、净持仓（多单-空单）、结算价、现货指数收盘价与基差，可判断期指多空情绪与大盘走势的背离或共振。" +
+				"数据为盘后更新（约17:30后），主源东方财富，降级中金所官网。当用户询问期指多空单、股指期货持仓、净持仓、空头增减、市场多空情绪时使用。",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"variety": map[string]any{
+						"type":        "string",
+						"description": "期指品种：IF（沪深300）、IH（上证50）、IC（中证500）、IM（中证1000），也支持中文名如 沪深300。",
+					},
+					"days": map[string]any{
+						"type":        "integer",
+						"description": "可选，返回最近多少个交易日，默认 20，最大 120。",
+					},
+					"includeMembers": map[string]any{
+						"type":        "boolean",
+						"description": "可选，是否附带最新交易日前20会员持仓明细龙虎榜（中金所），默认 false。",
+					},
+				},
+				Required: []string{"variety"},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
 			Name:        "GetTdxCompanyCategory",
 			Description: "通过通达信协议获取股票F10分类信息。不传category参数时返回所有可用分类名称列表；传入category参数时返回该分类的详细内容。可用分类包括：最新提示、公司概况、财务分析、股本结构、股东研究、机构持股、分红融资、高管治理、资金动向、资本运作、热点题材、公司公告、公司报道、经营分析、行业分析、研报评级。",
 			Parameters: &FunctionParameters{
@@ -601,6 +633,10 @@ func Tools(tools []Tool) []Tool {
 		Function: ToolFunction{
 			Name:        "GlobalStockIndexesReadable",
 			Description: "获取全球主要指数概览，并输出为 AI 易读的 Markdown 结构化文本。",
+			Parameters: &FunctionParameters{
+				Type:       "object",
+				Properties: map[string]any{},
+			},
 		},
 	})
 
@@ -919,6 +955,10 @@ func Tools(tools []Tool) []Tool {
 		Function: ToolFunction{
 			Name:        "GetCurrentTime",
 			Description: "获取当前本地时间（格式：YYYY-MM-DD HH:mm:ss）及星期几",
+			Parameters: &FunctionParameters{
+				Type:       "object",
+				Properties: map[string]any{},
+			},
 		},
 	})
 
@@ -963,6 +1003,10 @@ func Tools(tools []Tool) []Tool {
 		Function: ToolFunction{
 			Name:        "GetMarketData",
 			Description: "获取市场行情数据，包括指数行情、涨跌分布和今日申购信息",
+			Parameters: &FunctionParameters{
+				Type:       "object",
+				Properties: map[string]any{},
+			},
 		},
 	})
 
@@ -1710,16 +1754,181 @@ func Tools(tools []Tool) []Tool {
 		Type: "function",
 		Function: ToolFunction{
 			Name:        "GetLongTigerList",
-			Description: "获取龙虎榜数据（营业部排行榜）",
+			Description: "获取龙虎榜数据（营业部排行榜）。龙虎榜在交易日收盘后约17点发布，查询当日须在17点后，17点前或非交易日请传最近一个已发布的交易日期",
 			Parameters: &FunctionParameters{
 				Type: "object",
 				Properties: map[string]any{
 					"date": map[string]any{
 						"type":        "string",
-						"description": "查询日期，格式：2026-03-28，默认今天",
+						"description": "交易日期，格式：2026-03-28。龙虎榜收盘后约17点发布，17点前查当日会无数据，应传上一交易日",
 					},
 				},
 				Required: []string{"date"},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "GetLhbSeatDetail",
+			Description: "获取个股某交易日龙虎榜买5卖5席位明细（游资/机构买卖数据），含营业部名称、买卖金额、占总成交比例、席位类型识别（机构专用/北向通道/知名游资/普通营业部）及游资昵称标签。龙虎榜在交易日收盘后约17点发布，查询当日须在17点后，17点前或非交易日请传最近一个已发布的交易日期",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"stockCode": map[string]any{
+						"type":        "string",
+						"description": "股票代码，如 600519、000001.SZ",
+					},
+					"date": map[string]any{
+						"type":        "string",
+						"description": "交易日期，格式：2026-03-28。龙虎榜收盘后约17点发布，17点前查当日会无数据，应传上一交易日",
+					},
+				},
+				Required: []string{"stockCode", "date"},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "GetBkFundFlowRank",
+			Description: "获取板块/概念资金流向主力净流入排名TOP榜（如板块/概念资金流入流出前20名）。支持行业板块与概念板块、净流入榜与净流出榜；查询当天资金流向、板块轮动、主力资金动向时使用。返回板块代码与名称，可用 GetBkConstituentStocks 进一步查看成分股",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"boardType": map[string]any{
+						"type":        "string",
+						"description": "板块类型：industry=行业板块（默认），concept=概念板块，both=两者都查",
+					},
+					"direction": map[string]any{
+						"type":        "string",
+						"description": "方向：inflow=净流入榜，outflow=净流出榜，both=流入流出都查（默认）",
+					},
+					"date": map[string]any{
+						"type":        "string",
+						"description": "查询日期，格式：2026-09-08，为空取最新快照（非交易日自动回退最近交易日）",
+					},
+					"topN": map[string]any{
+						"type":        "number",
+						"description": "返回条数，默认20，最大100",
+					},
+				},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "GetBkConstituentStocks",
+			Description: "获取板块/概念的成分股列表TOP N，支持按涨跌幅、量比、换手率、总市值、流通市值、主力净流入、主力净流入占比、成交额升序/降序排序（如某板块主力净流入前20的成分股、板块内涨幅榜/换手率榜/市值龙头）。输入板块代码（BK0475，可从 GetBkFundFlowRank 获取）或名称（如 银行、机器人概念）",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"bkCodeOrName": map[string]any{
+						"type":        "string",
+						"description": "板块/概念代码或名称，如 BK0475、银行、机器人概念",
+					},
+					"sortBy": map[string]any{
+						"type":        "string",
+						"description": "排序字段：mainNetInflow=主力净流入（默认）、changePercent=涨跌幅、volumeRatio=量比、turnoverRate=换手率、totalMarketCap=总市值、flowMarketCap=流通市值、mainNetInflowPct=主力净流入占比、dealAmount=成交额",
+					},
+					"order": map[string]any{
+						"type":        "string",
+						"description": "排序方向：desc=降序（默认）、asc=升序",
+					},
+					"topN": map[string]any{
+						"type":        "number",
+						"description": "返回条数，默认20，最大50",
+					},
+				},
+				Required: []string{"bkCodeOrName"},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "GetPolicyNewsList",
+			Description: "获取政府部门最新政策新闻列表（数据来自各部委官网，如发改委/央行/证监会/财政部等82个部门，按日期倒序去重）。支持按部门名称或关键词过滤（如 能源/数据/证监会），也可按关键词检索已入库的历史政策标题。分析政策利好利空、行业影响、政策动向时使用",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"department": map[string]any{
+						"type":        "string",
+						"description": "部门名称或关键词：支持部门全名（如 国家能源局）及名称关键词（如 能源 命中 国家能源局，数据 命中 国家数据局），为空则聚合全部部门",
+					},
+					"keyword": map[string]any{
+						"type":        "string",
+						"description": "标题关键词，如 新能源/人工智能/房地产，非空时检索已入库历史政策",
+					},
+					"limit": map[string]any{
+						"type":        "number",
+						"description": "返回条数，默认20，最大100",
+					},
+				},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "GetPolicyNewsDetail",
+			Description: "获取某条政策新闻的详情全文内容（抓取政策原文页面并提取正文，含标题与原文链接）。输入政策新闻列表（GetPolicyNewsList）或政策文件库检索（SearchGovPolicyLibrary）中返回的链接，用于深入分析具体政策条款、实施时间、适用范围等",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"url": map[string]any{
+						"type":        "string",
+						"description": "政策详情页链接，即 GetPolicyNewsList/SearchGovPolicyLibrary 返回的链接字段（*.gov.cn 域名）",
+					},
+				},
+				Required: []string{"url"},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "SearchGovPolicyLibrary",
+			Description: "检索国务院政策文件库（sousuo.www.gov.cn 官方权威库，含国务院文件/部门文件/国务院公报等数万份正式政策文件，可查文号、发文机关、发布日期）。支持按发文机关（部门名称或关键词，如 能源/数据局/证监会）过滤。查询国家层面的正式政策文件、红头文件、法律法规原文时优先使用此工具；部委官网的新闻动态用 GetPolicyNewsList",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"keyword": map[string]any{
+						"type":        "string",
+						"description": "检索关键词，如 人工智能/新能源/住房公积金/新质生产力，为空则按发布时间返回最新文件",
+					},
+					"department": map[string]any{
+						"type":        "string",
+						"description": "发文机关：支持部门全名（如 商务部）及名称关键词（如 能源 命中 国家能源局，数据 命中 国家数据局）；含国务院时检索国务院本级文件（如 国务院办公厅）。为空则不过滤",
+					},
+					"searchField": map[string]any{
+						"type":        "string",
+						"description": "检索字段：title=按标题（默认），content=按正文全文",
+					},
+					"category": map[string]any{
+						"type":        "string",
+						"description": "文件类别：gongwen=国务院文件，bumenfile=部门文件，otherfile=其他文件（政策解读等），gongbao=国务院公报；为空合并全部类别",
+					},
+					"sortBy": map[string]any{
+						"type":        "string",
+						"description": "排序方式：score=按相关度（默认），pubtime=按发布时间倒序",
+					},
+					"page": map[string]any{
+						"type":        "number",
+						"description": "页码，默认 1，用于翻页获取更多结果",
+					},
+					"limit": map[string]any{
+						"type":        "number",
+						"description": "每页条数，默认 20，最大 50",
+					},
+				},
 			},
 		},
 	})
@@ -2407,7 +2616,7 @@ func Tools(tools []Tool) []Tool {
 				Properties: map[string]any{
 					"date": map[string]any{
 						"type":        "string",
-						"description": "查询日期，格式：2026-04-17，默认今天",
+						"description": "查询日期，格式：2026-04-17；留空自动回退到最近有数据的交易日（非交易日无数据）",
 					},
 				},
 			},
@@ -2424,7 +2633,7 @@ func Tools(tools []Tool) []Tool {
 				Properties: map[string]any{
 					"date": map[string]any{
 						"type":        "string",
-						"description": "查询日期，格式：2026-04-17，默认今天",
+						"description": "查询日期，格式：2026-04-17；留空自动回退到最近有数据的交易日（非交易日无数据）",
 					},
 				},
 			},
@@ -2441,7 +2650,7 @@ func Tools(tools []Tool) []Tool {
 				Properties: map[string]any{
 					"date": map[string]any{
 						"type":        "string",
-						"description": "查询日期，格式：2026-04-17，默认今天",
+						"description": "查询日期，格式：2026-04-17；留空自动回退到最近有数据的交易日（非交易日无数据）",
 					},
 				},
 			},
@@ -2458,7 +2667,7 @@ func Tools(tools []Tool) []Tool {
 				Properties: map[string]any{
 					"date": map[string]any{
 						"type":        "string",
-						"description": "查询日期，格式：2026-04-17，默认今天",
+						"description": "查询日期，格式：2026-04-17；留空自动回退到最近有数据的交易日（非交易日无数据）",
 					},
 				},
 			},
@@ -2640,6 +2849,37 @@ func Tools(tools []Tool) []Tool {
 		},
 	})
 
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name: "MarkdownToImage",
+			Description: "将 Markdown 文本或本地 Markdown 文件渲染为 PNG 图片并保存到本地文件，返回图片的绝对路径。" +
+				"输入支持两种形式（二选一，同时提供时优先 markdown 内联文本）：markdown 直接传入文本；" +
+				"filePath 传入本地文件路径（如 D:\\docs\\report.md，相对路径优先按工作目录解析、失败后回退程序所在目录）。" +
+				"渲染基于无头 Chrome，自动跟随应用深色/浅色主题，支持标题、表格、代码块、列表、加粗、涨跌红绿着色等 Markdown 排版，" +
+				"适合把较长的分析报告、表格密集型内容生成图片以便查看、分享或存档。" +
+				"当用户要求把内容转成图片、生成图片、导出为图片、做成长图时使用。" +
+				"注意：渲染耗时约 1~3 秒；输入内容超过 200KB 会直接失败。",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"markdown": map[string]any{
+						"type":        "string",
+						"description": "要渲染的 Markdown 内联文本，支持标题、表格、代码块、列表、加粗等语法。与 filePath 二选一，同时提供时优先使用本参数。",
+					},
+					"filePath": map[string]any{
+						"type":        "string",
+						"description": "本地 Markdown 文件路径（.md/.markdown/.txt 等文本文件），如 D:\\docs\\report.md 或 report.md。与 markdown 二选一；相对路径优先按进程工作目录解析，失败后回退到程序所在目录。",
+					},
+					"filename": map[string]any{
+						"type":        "string",
+						"description": "可选的输出文件名（不含 .png 扩展名），默认取 filePath 文件基名或按时间戳自动生成；仅允许字母、数字、中文、下划线与中横线。",
+					},
+				},
+			},
+		},
+	})
+
 	tools = appendAgentParityTools(tools)
 
 	// 根据 API Key 配置过滤工具，未配置对应 Key 的工具不注册
@@ -2698,6 +2938,9 @@ var dataToolGroupMap = map[string]dataToolGroup{
 	"GetStockHolderTrend":         dataToolGroupStockAnalysis,
 	"GetStockBillboard":           dataToolGroupStockAnalysis,
 	"GetStockOperationDeptTrade":  dataToolGroupStockAnalysis,
+	"GetLhbSeatDetail":            dataToolGroupStockAnalysis,
+	"GetBkFundFlowRank":           dataToolGroupMoneyFlow,
+	"GetBkConstituentStocks":      dataToolGroupMoneyFlow,
 	"ComparableCompanyAnalysis":   dataToolGroupStockAnalysis,
 	"FinancialQA":                 dataToolGroupStockAnalysis,
 	"GetAIAnalysisContent":        dataToolGroupStockAnalysis,
@@ -2761,6 +3004,7 @@ var dataToolGroupMap = map[string]dataToolGroup{
 	"GetStockHistoryMoneyData": dataToolGroupMoneyFlow,
 	"GetIndustryMoneyRank":     dataToolGroupMoneyFlow,
 	"GetMACCapitalFlow":        dataToolGroupMoneyFlow,
+	"GetFuturesPosition":       dataToolGroupMoneyFlow,
 
 	"GetNewsListData":          dataToolGroupNewsResearch,
 	"QueryStockNews":           dataToolGroupNewsResearch,
@@ -2822,6 +3066,8 @@ var dataToolGroupMap = map[string]dataToolGroup{
 	"MergeStockConcepts":      dataToolGroupOperations,
 	"ReorganizeStockGroups":   dataToolGroupOperations,
 
+	"MarkdownToImage": dataToolGroupOperations,
+
 	"ListPromptTemplates":  dataToolGroupBase,
 	"GetPromptTemplate":    dataToolGroupBase,
 	"SavePromptTemplate":   dataToolGroupBase,
@@ -2859,6 +3105,7 @@ var dataToolGroupKeywordsList = []dataToolGroupKeywords{
 	{dataToolGroupMoneyFlow, []string{
 		"资金", "流入", "流出", "净流入", "净流出", "北向", "南向", "沪股通", "深股通",
 		"港股通", "主力", "外资", "行业资金", "板块资金",
+		"期指", "股指期货", "多空单", "多空", "净持仓", "空头", "多头持仓",
 	}},
 	{dataToolGroupNewsResearch, []string{
 		"新闻", "资讯", "消息", "公告", "最新动态", "政策", "券商", "机构观点", "评级",
@@ -2873,9 +3120,10 @@ var dataToolGroupKeywordsList = []dataToolGroupKeywords{
 	{dataToolGroupOperations, []string{
 		"预警", "价位", "开仓", "成本价", "钉钉", "QQ", "通知", "推送", "发送消息",
 		"基金", "基金代码", "基金名称", "净值",
-		"关注", "自选", "加自选", "加入分组", "设置概念", "概念标签", "归类", "持仓", "持仓量", "止盈价", "止损价",
+		"关注", "自选", "加自选", "加入分组", "设置概念", "概念标签", "归类", "持仓", "持仓量",
 		"交易日志", "交易记录", "盈亏",
 		"操作计划", "每日计划", "操作方案", "明日操作", "明天操作", "盘中预警",
+		"生成图片", "转成图片", "转为图片", "导出图片", "保存为图片", "图片形式", "长图", "渲染图片",
 	}},
 }
 
@@ -3090,6 +3338,10 @@ func appendAgentParityTools(tools []Tool) []Tool {
 		Function: ToolFunction{
 			Name:        "GetStockGroups",
 			Description: "获取所有股票分组列表，以及每个分组下的股票代码。可用于查看分组结构、确认分组ID。",
+			Parameters: &FunctionParameters{
+				Type:       "object",
+				Properties: map[string]any{},
+			},
 		},
 	})
 	// 2. CreateStockGroup
@@ -3424,13 +3676,13 @@ func appendAgentParityTools(tools []Tool) []Tool {
 		Type: "function",
 		Function: ToolFunction{
 			Name:        "ListPromptTemplates",
-			Description: "查询提示词模板列表。可按名称和类型筛选，为空则返回全部。返回摘要列表（content 截断为 200 字预览）。",
+			Description: "查询提示词模板列表。可按名称关键词模糊搜索（如传\"龙头\"可命中\"龙头战法复盘\"）、按类型筛选，为空则返回全部。返回摘要列表（content 截断为 200 字预览）。",
 			Parameters: &FunctionParameters{
 				Type: "object",
 				Properties: map[string]any{
 					"name": map[string]any{
 						"type":        "string",
-						"description": "可选，按模板名称精确筛选",
+						"description": "可选，按模板名称关键词模糊筛选（支持部分匹配）",
 					},
 					"type": map[string]any{
 						"type":        "string",

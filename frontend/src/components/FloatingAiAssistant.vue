@@ -14,11 +14,10 @@
     </div>
   </Transition>
 
-  <!-- 右侧抽屉：点击或悬停触发条时从右往左滑出 -->
-  <Transition name="drawer-slide">
-    <div v-if="panelVisible" class="drawer-wrap">
-      <div class="drawer-mask" @click="closePanel" />
-      <div class="drawer-panel" @click.stop>
+  <!-- 右侧抽屉：常驻渲染（避免打开时挂载 DOM 卡顿），通过 class 切换滑入滑出 -->
+  <div :class="['drawer-wrap', { 'drawer-open': panelVisible }]">
+    <div class="drawer-mask" @click="closePanel" />
+    <div class="drawer-panel" @click.stop>
         <NCard
           size="small"
           class="panel-card"
@@ -298,7 +297,6 @@
         </NCard>
       </div>
     </div>
-  </Transition>
 </template>
 
 <script setup>
@@ -316,7 +314,7 @@ import {
   ShareSocialOutline,
   ImageOutline
 } from '@vicons/ionicons5'
-import { AbortSummaryStockNews, GetAiAssistantSession, GetAiConfigs, GetConfig, GetPromptTemplates, GetSponsorInfo, GetVersionInfo, SaveAiAssistantSession, ShareText, SummaryStockNews } from '../../wailsjs/go/main/App'
+import { AbortSummaryStockNews, GetAiAssistantSession, GetAiConfigs, GetConfig, GetEffectiveSponsorVip, GetPromptTemplates, GetVersionInfo, SaveAiAssistantSession, ShareText, SummaryStockNews } from '../../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../../wailsjs/runtime'
 import { MdPreview } from 'md-editor-v3'
 import 'md-editor-v3/lib/preview.css'
@@ -439,6 +437,31 @@ function getLastAssistantContent() {
   return ''
 }
 
+function getLastUserQuestion() {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const m = messages.value[i]
+    if (m?.role === 'user') {
+      const q = (m?.content ?? '').trim()
+      if (q) return q
+    }
+  }
+  return ''
+}
+
+function findPrecedingUserQuestion(assistantMsg) {
+  if (!assistantMsg) return ''
+  const idx = messages.value.indexOf(assistantMsg)
+  if (idx < 0) return ''
+  for (let i = idx - 1; i >= 0; i--) {
+    const m = messages.value[i]
+    if (m?.role === 'user') {
+      const q = (m?.content ?? '').trim()
+      if (q) return q
+    }
+  }
+  return ''
+}
+
 function shareAiToCommunity() {
   const text = getLastAssistantContent()
   if (!text) {
@@ -446,7 +469,8 @@ function shareAiToCommunity() {
     shareTipVisible.value = true
     return
   }
-  shareTextToCommunity(text, '')
+  // title 传最近的用户提问，后端提取不到标题时用它兜底
+  shareTextToCommunity(text, getLastUserQuestion())
 }
 
 function shareAiContent(msg) {
@@ -456,7 +480,8 @@ function shareAiContent(msg) {
     shareTipVisible.value = true
     return
   }
-  shareTextToCommunity(text, '')
+  // title 传该回复对应的用户提问，后端提取不到标题时用它兜底
+  shareTextToCommunity(text, findPrecedingUserQuestion(msg))
 }
 
 function assistantReplyExportTarget(editorId, bubble) {
@@ -545,7 +570,7 @@ function shareTextToCommunity(text, title) {
   shareLoading.value = true
   shareTipText.value = '正在分享到社区...'
   shareTipVisible.value = true
-  ShareText(text, title)
+  ShareText(text, title || '')
     .then((msg) => {
       shareTipText.value = msg
       shareTipVisible.value = true
@@ -647,12 +672,16 @@ function closePanel() {
 }
 
 async function ensureVipInfo() {
-  if (vipLoaded.value || vipLoading.value) return
+  // 注意：不能缓存结果。改用 GetEffectiveSponsorVip（后端每次同步本地解密并判断有效期，无网络 IO），
+  // 旧方案读 GetSponsorInfo 依赖启动后台 goroutine（CheckUpdate）异步填充 SponsorInfo，
+  // 启动早期预加载会读到空值并把 vipLevel=0 固化，导致 VIP2 用户被误拦。
+  if (vipLoading.value) return
   vipLoading.value = true
   try {
-    const res = await GetSponsorInfo()
+    const res = await GetEffectiveSponsorVip()
     const lvl = Number(res?.vipLevel ?? 0)
-    vipLevel.value = Number.isNaN(lvl) ? 0 : lvl
+    const active = res?.active !== false
+    vipLevel.value = active && !Number.isNaN(lvl) ? lvl : 0
   } catch (_) {
     vipLevel.value = 0
   } finally {
@@ -664,6 +693,7 @@ async function ensureVipInfo() {
 async function togglePanel() {
   if (!panelVisible.value) {
     ensureSummaryEvent()
+    // 每次打开前重新校验（后端为同步本地解密，微秒级，不影响打开速度）
     await ensureVipInfo()
     if ((vipLevel.value ?? 0) < 2) {
       message.warning('go-stock AI 助手功能仅对 VIP2 及以上赞助用户开放，请前往关于页面查看赞助方式。')
@@ -730,13 +760,20 @@ function sendMessage() {
       historyMessages.length <= maxHistory ? historyMessages : historyMessages.slice(-maxHistory)
     historyJSON = JSON.stringify(toSend.map(m => ({ role: m.role, content: m.content ?? '', reasoning: m.reasoning ?? '' })))
   }
-  SummaryStockNews(text, configId, sysId, true, thinkingMode.value, AI_ASSISTANT_EVENT, historyJSON)
+  SummaryStockNews(text, configId, sysId, true, thinkingMode.value, AI_ASSISTANT_EVENT, historyJSON, '')
   nextTick(scrollToBottom)
 }
 
 let hasSummaryEvent = false
 
 function onSummaryStockNews(msg) {
+  if (msg === 'CANCELLED') {
+    // 当前的回答流被新的请求或手动中断取代，结束加载状态
+    isStreamLoad.value = false
+    sentFromFloating.value = false
+    isAborted.value = false
+    return
+  }
   if (msg === 'DONE') {
     isStreamLoad.value = false
     sentFromFloating.value = false
@@ -789,11 +826,15 @@ onBeforeUnmount(() => {
   hasSummaryEvent = false
 })
 
-function loadPromptTemplates() {
+let promptTemplatesLoaded = false
+function loadPromptTemplates(force = false) {
+  // 模板变更已有 PROMPT_TEMPLATES_CHANGED 事件刷新，首次加载后无需每次打开都重新请求
+  if (promptTemplatesLoaded && !force) return
   GetPromptTemplates('', '').then(res => {
     const list = Array.isArray(res) ? res : []
     sysPromptTemplates.value = list.filter(t => t.type === '模型系统Prompt')
     userPromptTemplates.value = list.filter(t => t.type === '模型用户Prompt')
+    promptTemplatesLoaded = true
   })
 }
 
@@ -810,7 +851,7 @@ onBeforeMount(()=> {
   })
 } )
 onMounted(() => {
-  EventsOn(PROMPT_TEMPLATES_CHANGED, loadPromptTemplates)
+  EventsOn(PROMPT_TEMPLATES_CHANGED, () => loadPromptTemplates(true))
   loadHistory()
   GetAiConfigs().then(res => {
     const list = Array.isArray(res) ? res : []
@@ -894,12 +935,18 @@ watch(aiConfigId, (newId) => {
   box-shadow: 0 0 6px rgba(248, 113, 113, 0.9);
 }
 
-/* 抽屉容器 */
+/* 抽屉容器：常驻渲染，关闭态隐藏且不响应交互，打开时瞬时可见 */
 .drawer-wrap {
   position: fixed;
   inset: 0;
   z-index: 9999;
   pointer-events: none;
+  visibility: hidden;
+  transition: visibility 0s 0.25s;
+}
+.drawer-wrap.drawer-open {
+  visibility: visible;
+  transition: visibility 0s;
 }
 .drawer-wrap > * {
   pointer-events: auto;
@@ -909,6 +956,11 @@ watch(aiConfigId, (newId) => {
   inset: 0;
   background: rgba(0, 0, 0, 0.35);
   cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.drawer-wrap.drawer-open .drawer-mask {
+  opacity: 1;
 }
 .drawer-panel {
   position: absolute;
@@ -923,6 +975,11 @@ watch(aiConfigId, (newId) => {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.25s ease;
+}
+.drawer-wrap.drawer-open .drawer-panel {
+  transform: translateX(0);
 }
 
 .panel-card {
@@ -1308,32 +1365,6 @@ watch(aiConfigId, (newId) => {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
-}
-
-/* 抽屉从右往左滑入 */
-.drawer-slide-enter-active .drawer-mask,
-.drawer-slide-leave-active .drawer-mask {
-  transition: opacity 0.25s ease;
-}
-.drawer-slide-enter-active .drawer-panel,
-.drawer-slide-leave-active .drawer-panel {
-  transition: transform 0.25s ease;
-}
-.drawer-slide-enter-from .drawer-mask,
-.drawer-slide-leave-to .drawer-mask {
-  opacity: 0;
-}
-.drawer-slide-enter-from .drawer-panel,
-.drawer-slide-leave-to .drawer-panel {
-  transform: translateX(100%);
-}
-.drawer-slide-enter-to .drawer-mask,
-.drawer-slide-leave-from .drawer-mask {
-  opacity: 1;
-}
-.drawer-slide-enter-to .drawer-panel,
-.drawer-slide-leave-from .drawer-panel {
-  transform: translateX(0);
 }
 </style>
 <!-- 下拉挂载到 body 时需提高 z-index，否则会被抽屉遮挡 -->

@@ -11,6 +11,10 @@ import (
 	"gorm.io/gorm"
 )
 
+// DefaultPromptPlazaApiBase 广场服务地址固定值（定制版不允许修改）。
+// 提示词/技能广场、分析报告分享等所有客户端↔服务端交互统一走此地址。
+const DefaultPromptPlazaApiBase = "https://go-stock.sparkmemory.top/api"
+
 type Settings struct {
 	gorm.Model
 	TushareToken     string `json:"tushareToken"`
@@ -28,6 +32,7 @@ type Settings struct {
 	FeishuBotSysPromptId   int    `json:"feishuBotSysPromptId" gorm:"column:feishu_bot_sys_prompt_id"`
 	FeishuBotEnableTools   bool   `json:"feishuBotEnableTools"`
 	FeishuBotThinking      bool   `json:"feishuBotThinking"`
+	FeishuBotMemoryEnable  bool   `json:"feishuBotMemoryEnable" gorm:"column:feishu_bot_memory_enable"`
 	FeishuBotAgentMode     string `json:"feishuBotAgentMode" gorm:"column:feishu_bot_agent_mode"`
 	UpdateBasicInfoOnStart bool   `json:"updateBasicInfoOnStart"`
 	RefreshInterval        int64  `json:"refreshInterval"`
@@ -57,6 +62,14 @@ type Settings struct {
 	WindowWidth            int    `json:"windowWidth"`
 	WindowHeight           int    `json:"windowHeight"`
 	PromptPlazaApiBase     string `json:"promptPlazaApiBase" gorm:"column:prompt_plaza_api_base"`
+	// LongTermMemoryAiConfigId 长期记忆向量检索绑定的 AIConfig ID。
+	// 0=自动模式（优先 ModelType=embedding 的服务）；>0=用指定 AIConfig。
+	// 用于让用户明确指定长期记忆用哪个向量服务，避免自动选错。
+	LongTermMemoryAiConfigId int `json:"longTermMemoryAiConfigId" gorm:"column:long_term_memory_ai_config_id;default:0"`
+	// ProfileLearnAiConfigId 用户画像学习（重新学习/纠正即学习）绑定的 AIConfig ID。
+	// 0=自动模式（取第一个可用的对话模型）；>0=用指定 AIConfig。
+	// 画像学习涉及归纳与增量调和，建议指定能力较强的模型。
+	ProfileLearnAiConfigId int `json:"profileLearnAiConfigId" gorm:"column:profile_learn_ai_config_id;default:0"`
 }
 
 func (receiver Settings) TableName() string {
@@ -64,20 +77,41 @@ func (receiver Settings) TableName() string {
 }
 
 type AIConfig struct {
-	ID               uint `gorm:"primarykey"`
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	Name             string  `json:"name"`
-	BaseUrl          string  `json:"baseUrl"`
-	ApiKey           string  `json:"apiKey" `
-	ModelName        string  `json:"modelName"`
-	MaxTokens        int     `json:"maxTokens"`
+	ID        uint `gorm:"primarykey"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Name      string `json:"name"`
+	BaseUrl   string `json:"baseUrl"`
+	ApiKey    string `json:"apiKey" `
+	ModelName string `json:"modelName"`
+	// ModelType 模型类型："chat"=文本对话模型（默认），"embedding"=向量模型。
+	// 同一提供商的对话与向量接口地址可能不同，故拆分为独立 AIConfig 条目。
+	// type=embedding 时，ModelName 即向量模型名（如 text-embedding-3-small / BAAI/bge-m3）。
+	ModelType string `json:"modelType" gorm:"column:model_type;default:'chat'"`
+	MaxTokens int    `json:"maxTokens"`
+	// ContextWindow 模型上下文窗口大小（输入+输出总容量）。
+	// 由 FetchAiModelInfo 从模型 API 的 max_context_length/context_length 自动获取，
+	// 或从内置模型表推导。用于摘要中间件和消息压缩的 token 预算计算。
+	// 为 0 时运行时按内置表/MaxTokens/默认值兜底（向后兼容旧配置）。
+	ContextWindow    int     `json:"contextWindow" gorm:"column:context_window"`
 	Temperature      float64 `json:"temperature"`
 	TimeOut          int     `json:"timeOut"`
 	HttpProxy        string  `json:"httpProxy"`
 	HttpProxyEnabled bool    `json:"httpProxyEnabled"`
 	SessionId        string  `json:"sessionId" gorm:"index;size:64"`
 	Thinking         bool    `json:"thinking"`
+	// SupportVision 模型是否支持视觉理解（图片输入，OpenAI 兼容 image_url 内容块）。
+	// 开启后 AI 助手对话可发送图片（base64 data URL 或外部图片 URL），
+	// 适用于 DeepSeek-Vision、GLM-4V、Qwen-VL 等多模态模型。
+	SupportVision bool `json:"supportVision" gorm:"column:support_vision;default:false"`
+	// ExtraHeaders 自定义 HTTP 请求头（JSON 格式字符串，如 {"x-team-id":"...","x-agent-id":"..."}）。
+	// 支持模板变量：{{sessionId}}（会话ID）、{{uuid}}（每次请求生成新UUID）。
+	// 用于对接需携带额外 Header 的代理/网关（如腾讯云 TencentDB-Agent-Memory / CodeBuddy Proxy）。
+	ExtraHeaders string `json:"extraHeaders" gorm:"type:text"`
+	// EmbeddingModel 长期记忆向量检索使用的 embedding 模型名（OpenAI 兼容 /v1/embeddings 接口）。
+	// 留空时默认 "text-embedding-3-small"；中文供应商可填其支持的模型名（如 Qwen 的 text-embedding-v3）。
+	// 仅 backend/agent/long_term_memory.go 使用，与对话模型 ModelName 独立。
+	EmbeddingModel string `json:"embeddingModel" gorm:"column:embedding_model"`
 }
 
 func (AIConfig) TableName() string {
@@ -137,6 +171,7 @@ func UpdateConfig(s *SettingConfig) string {
 			"feishu_bot_sys_prompt_id":   s.FeishuBotSysPromptId,
 			"feishu_bot_enable_tools":    s.FeishuBotEnableTools,
 			"feishu_bot_thinking":        s.FeishuBotThinking,
+			"feishu_bot_memory_enable":   s.FeishuBotMemoryEnable,
 			"feishu_bot_agent_mode":      s.FeishuBotAgentMode,
 			"update_basic_info_on_start": s.UpdateBasicInfoOnStart,
 			"refresh_interval":           s.RefreshInterval,
@@ -165,7 +200,12 @@ func UpdateConfig(s *SettingConfig) string {
 			"ths_finance_api_key":        s.ThsFinanceApiKey,
 			"window_width":               s.WindowWidth,
 			"window_height":              s.WindowHeight,
-			"prompt_plaza_api_base":      s.PromptPlazaApiBase,
+			"prompt_plaza_api_base":      DefaultPromptPlazaApiBase, // 固定值，不信任提交内容
+			// 注意：long_term_memory_ai_config_id / profile_learn_ai_config_id 不在此更新。
+			// 主设置页（settings.vue）构造的表单不含这两个字段，提交时为零值，
+			// 若在此写库会把知识库页/画像页设置的绑定服务静默重置为 0（自动模式）。
+			// 它们只能通过专用单字段 API 修改：
+			//   KnowledgeBaseApi.SetLongTermMemoryAiConfigId / UserProfileApi.SetProfileLearnAiConfigId
 		})
 		if result.Error != nil {
 			logger.SugaredLogger.Errorf("更新配置失败: %v", result.Error)
@@ -252,12 +292,17 @@ func updateAiConfigs(aiConfigs []*AIConfig) error {
 				"api_key":            item.ApiKey,
 				"model_name":         item.ModelName,
 				"max_tokens":         item.MaxTokens,
+				"context_window":     item.ContextWindow,
 				"temperature":        item.Temperature,
 				"time_out":           item.TimeOut,
 				"http_proxy":         item.HttpProxy,
 				"http_proxy_enabled": item.HttpProxyEnabled,
 				"session_id":         item.SessionId,
 				"thinking":           item.Thinking,
+				"support_vision":     item.SupportVision,
+				"extra_headers":      item.ExtraHeaders,
+				"embedding_model":    item.EmbeddingModel,
+				"model_type":         item.ModelType,
 			}).Error
 			if e != nil {
 				return
@@ -298,9 +343,10 @@ func GetSettingConfig() *SettingConfig {
 	aiConfigs := make([]*AIConfig, 0)
 	// 处理数据库查询可能返回的空结果
 	settingsResult := db.Dao.Model(&Settings{}).First(settings)
-	// 新用户无设置记录时，默认启用暗黑主题
+	// 新用户无设置记录时，默认启用暗黑主题与 AI 诊股
 	if errors.Is(settingsResult.Error, gorm.ErrRecordNotFound) {
 		settings.DarkTheme = true
+		settings.OpenAiEnable = true
 	}
 	// AI 配置始终查询，不依赖 OpenAiEnable 开关：
 	// AI 配置管理页面、飞书机器人、AI 助手等独立功能可能在 OpenAiEnable=false 时也需要读取已保存的配置
@@ -329,6 +375,8 @@ func GetSettingConfig() *SettingConfig {
 		settings.BrowserPoolSize = 1
 	}
 	settings.EnableAgent = false
+	// 广场服务地址固定（定制版不可修改），无视 DB 历史值
+	settings.PromptPlazaApiBase = DefaultPromptPlazaApiBase
 
 	settingConfig.Settings = settings
 	settingConfig.AiConfigs = aiConfigs

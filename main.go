@@ -315,6 +315,11 @@ func AutoMigrate() {
 	db.Dao.AutoMigrate(&models.BKFundFlow{})
 	db.Dao.AutoMigrate(&models.ConceptFundFlow{})
 	db.Dao.AutoMigrate(&models.DailyOperationPlan{})
+	db.Dao.AutoMigrate(&models.DailyReview{})
+	db.Dao.AutoMigrate(&models.MorningStrategy{})
+	db.Dao.AutoMigrate(&models.PromptBacktestTask{})
+	db.Dao.AutoMigrate(&models.PromptBacktestPick{})
+	db.Dao.AutoMigrate(&models.SignalRecord{})
 
 	//updateMultipleModel()
 

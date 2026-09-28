@@ -671,6 +671,19 @@ const allTableColumns = [
     }
   },
   {
+    title: '量比', key: '量比', width: 80,
+    sorter: (a, b) => Number(a['量比'] || 0) - Number(b['量比'] || 0),
+    render(row) {
+      const v = Number(row['量比'])
+      // 港股/美股/北交所无该字段；停牌或集合竞价前为 0，均不展示
+      if (!v || Number.isNaN(v)) {
+        return h(NText, { depth: 3, style: 'font-size:12px;' }, { default: () => '—' })
+      }
+      // >1 放量（红），<1 缩量（绿），便于快速识别是否放量
+      return h(NText, { type: v >= 1 ? 'error' : 'success' }, { default: () => v.toFixed(2) })
+    }
+  },
+  {
     title: '最高/最低', key: '今日最高价', width: 160,
     sorter: (a, b) => Number(a['今日最高价']) - Number(b['今日最高价']),
     render(row) {
@@ -2992,16 +3005,17 @@ function SendMessage(result, type) {
       "![image](" + img + ")\n"
   let title = result["股票名称"] + "(" + result["股票代码"] + ") " + result["当前价格"] + " " + result.changePercent
 
-  let msg = '{' +
-      '     "msgtype": "markdown",' +
-      '     "markdown": {' +
-      '         "title":"[' + typeName + "]" + title + '",' +
-      '         "text": "' + markdown + '"' +
-      '     },' +
-      '      "at": {' +
-      '          "isAtAll": true' +
-      '      }' +
-      ' }'
+  // 必须用 JSON.stringify 生成合法 JSON：手工拼串中的换行会破坏 JSON，钉钉返回 40035
+  let msg = JSON.stringify({
+    msgtype: "markdown",
+    markdown: {
+      title: "[" + typeName + "]" + title,
+      text: markdown
+    },
+    at: {
+      isAtAll: true
+    }
+  })
   // SendDingDingMessage(msg,result["股票代码"])
   SendDingDingMessageByType(msg, result["股票代码"], type)
 }
@@ -3074,7 +3088,17 @@ function checkPriceLineAlerts(result) {
   // })
 
   if (triggeredType > 0) {
-    const msg = `### 📈 价位线预警\n\n### ${stockName} (${stockCodeDisplay})\n\n- 当前价格: ${price}\n- 预警类型: ${triggeredType === 4 ? '止盈触及' : '止损触及'}\n- 开仓价: ${followedStock.EntryPrice || '-'}\n- 止盈价: ${followedStock.TakeProfitPrice || '-'}\n- 止损价: ${followedStock.StopLossPrice || '-'}`;
+    const text = `### 📈 价位线预警\n\n### ${stockName} (${stockCodeDisplay})\n\n- 当前价格: ${price}\n- 预警类型: ${triggeredType === 4 ? '止盈触及' : '止损触及'}\n- 开仓价: ${followedStock.EntryPrice || '-'}\n- 止盈价: ${followedStock.TakeProfitPrice || '-'}\n- 止损价: ${followedStock.StopLossPrice || '-'}`;
+    const msg = JSON.stringify({
+      msgtype: "markdown",
+      markdown: {
+        title: `📈 价位线预警 ${stockName}(${stockCodeDisplay})`,
+        text
+      },
+      at: {
+        isAtAll: true
+      }
+    })
     SendDingDingMessageByType(msg, code, triggeredType)
   }
 }
@@ -4018,7 +4042,7 @@ watch([tdxAmountFilter, filteredTdxTransactionList], () => {
     </n-tab-pane>
   </n-tabs>
 
-  <div style="position: fixed;bottom: 18px;right:5px;z-index: 10;width: 400px">
+  <div style="position: fixed;top: 58px;right:5px;z-index: 10;width: 400px">
     <!--    <n-card :bordered="false">-->
     <n-input-group>
       <!--        <n-button  type="error" @click="addBTN=!addBTN" > <n-icon :component="Search"/>&nbsp;<n-text  v-if="addBTN">隐藏</n-text></n-button>-->

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go-stock/backend/agent"
 	"go-stock/backend/data"
+	"go-stock/backend/db"
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
 	"strings"
@@ -38,8 +39,55 @@ func (a *App) GetTimezone() map[string]any {
 	}
 }
 
+// VacuumDatabase 手动压缩数据库文件（VACUUM），回收已清理数据占用的磁盘空间。
+// SQLite 的 DELETE 不归还磁盘空间，高频写入表长期清理后文件会远大于实际数据量，
+// 导致查询扫描页面数、磁盘 IO 放大而拖慢其它页面。
+// 注意：耗时较长且全程独占写锁，请在非交易时段执行，执行期间其它写入会排队等待。
+func (a *App) VacuumDatabase() string {
+	res, err := db.Vacuum()
+	if err != nil {
+		logger.SugaredLogger.Errorf("VacuumDatabase error: %v", err)
+		return "数据库压缩失败：" + err.Error()
+	}
+	toMB := func(b int64) string { return fmt.Sprintf("%.1f MB", float64(b)/(1024*1024)) }
+	msg := fmt.Sprintf("数据库压缩完成：%s → %s，释放 %s，耗时 %.1f 秒",
+		toMB(res.BeforeBytes), toMB(res.AfterBytes), toMB(res.FreedBytes), res.DurationSec)
+	logger.SugaredLogger.Infof("VacuumDatabase success: %s (file=%s)", msg, res.FilePath)
+	return msg
+}
+
 func (a *App) LongTigerRank(date string) *[]models.LongTigerRankData {
 	return data.NewMarketNewsApi().LongTiger(date)
+}
+
+// GetLhbSeatDetail 查询个股某交易日龙虎榜买5卖5席位明细（游资/机构买卖数据）
+func (a *App) GetLhbSeatDetail(stockCode, date string) *models.LhbSeatDetailData {
+	return data.NewLhbSeatApi().GetLhbSeatDetail(stockCode, date)
+}
+
+// GetLhbDailySummary 汇总某交易日龙虎榜游资/机构动向（当日游资买了啥卖了啥）
+func (a *App) GetLhbDailySummary(date string) *models.LhbDailySummary {
+	return data.NewLhbSeatApi().GetLhbDailySummary(date)
+}
+
+// RefreshHotMoneySeats 从远程 URL 刷新游资席位名录（data/hot_money_seats.json）
+func (a *App) RefreshHotMoneySeats(url string) error {
+	return data.RefreshHotMoneySeats(url)
+}
+
+// GetHotMoneySeats 读取游资席位名录（游资名录维护页面）
+func (a *App) GetHotMoneySeats() *data.HotMoneySeatFile {
+	return data.GetHotMoneySeats()
+}
+
+// SaveHotMoneySeats 保存游资席位名录（落盘并即时生效）
+func (a *App) SaveHotMoneySeats(f *data.HotMoneySeatFile) error {
+	return data.SaveHotMoneySeats(f)
+}
+
+// ResetHotMoneySeats 重置游资席位名录为内置数据
+func (a *App) ResetHotMoneySeats() error {
+	return data.ResetHotMoneySeats()
 }
 
 func (a *App) StockResearchReport(stockCode string) []any {
@@ -281,7 +329,7 @@ func (a *App) GetAllStocks(page int, pageSize int, name string, technicalIndicat
 	return data.NewStockDataApi().GetAllStocks(page, pageSize, name, technicalIndicators)
 }
 
-func (a *App) ChatWithAgent(question string, aiConfigId int, sysPromptId *int, memoryMode bool, memoryCount int, thinkingMode bool, agentMode string, sessionId string) {
+func (a *App) ChatWithAgent(question string, aiConfigId int, sysPromptId *int, memoryMode bool, memoryCount int, thinkingMode bool, agentMode string, sessionId string, skillDirName string, imagesJSON string) {
 	defer func() {
 		if r := recover(); r != nil {
 			logger.SugaredLogger.Errorf("ChatWithAgent panic: %v", r)
@@ -304,11 +352,102 @@ func (a *App) ChatWithAgent(question string, aiConfigId int, sysPromptId *int, m
 
 	// sessionId 作为 optsOverride[1] 传入，ChatWithContext 中会覆盖默认的 sessionID，
 	// 使记忆按前端会话隔离：新对话生成新 sessionId，切换模型保持同一 sessionId。
-	ch := agent.NewStockAiAgentApi().ChatWithContext(ctx, question, aiConfigId, sysPromptId, memoryMode, memoryCount, thinkingMode, agentMode, "", sessionId)
+	// 技能选择（支持逗号分隔多选）：用户选定技能后构建
+	//   - sysPromptOverride（optsOverride[0]）：技能全文 + 激活纪律（强制主 Agent 应用方法论并在委派时传播）
+	//   - questionBlock（optsOverride[3]）：随用户消息提交的激活块，经 task 委派描述触达子 Agent
+	//   - imagesJSON（optsOverride[4]）：当前提问携带的图片列表 JSON（http(s) 外链或 base64 data URL），
+	//     仅视觉模型生效，参考 https://api-docs.deepseek.com/zh-cn/guides/vision/
+	// 并将 sysPromptId 置空以彻底忽略用户选择的系统提示词。
+	// 前端同时会把已选技能名以 @技能名 形式拼入提问文本一起提交。
+	effectiveSysPromptId := sysPromptId
+	skillPromptOverride := ""
+	skillQuestionBlock := ""
+	if strings.TrimSpace(skillDirName) != "" {
+		skillPromptOverride, skillQuestionBlock = buildSkillContext(skillDirName)
+		if skillPromptOverride == "" {
+			logger.SugaredLogger.Warnf("ChatWithAgent: 技能 %q 全部加载失败，回退到默认系统提示词", skillDirName)
+		} else {
+			effectiveSysPromptId = nil
+		}
+	}
+	// optsOverride 位序（ChatWithContext 定义）：[0]sysPromptOverride [1]sessionIDOverride
+	// [2]resumeContextOverride [3]skillQuestionBlock [4]imagesJSON [5]skillDirName。
+	// 此处不使用 resumeContext（传空占位），漏传会导致后续参数整体左移错位——
+	// 曾导致 imagesJSON 被读作 skillQuestionBlock 拼进用户消息文本（图片 URL 以
+	// 文本形式出现，模型用工具去 fetch 而非视觉识别），真正的图片解析位永远为空。
+	// skillDirName（[5]）：技能目录名（逗号分隔），经 AgentMeta 注入推荐工具，
+	// 使推荐记录快照技能 ID，供按技能维度的回测统计。
+	ch := agent.NewStockAiAgentApi().ChatWithContext(ctx, question, aiConfigId, effectiveSysPromptId, memoryMode, memoryCount, thinkingMode, agentMode, skillPromptOverride, sessionId, "", skillQuestionBlock, strings.TrimSpace(imagesJSON), strings.TrimSpace(skillDirName))
 	for msg := range ch {
 		runtime.EventsEmit(a.ctx, "agent-message", agentMessageToFrontendMap(msg))
 	}
 	runtime.EventsEmit(a.ctx, "agent-message", agentMessageToFrontendMap(&schema.Message{
+		Role:    schema.Assistant,
+		Content: "agent-DONE",
+	}))
+}
+
+// ChatWithAgentKBQA 「知识库问答」专用 Agent 调用。
+//
+// 与 ChatWithAgent 的区别：
+//   - 将前端已检索到的统一命中片段（hitsJSON）注入为系统提示词（sysPromptOverride），
+//     引导 Agent 基于这些知识库内容综合回答，避免重复调用知识库检索工具
+//   - 不带历史记忆（memoryMode=false），每次问答独立
+//   - 流式输出在独立事件 "kb-qa-message" 上，避免与主聊天 "agent-message" 冲突
+//   - 复用 a.agentCancel，与主聊天互斥（同一时刻仅一个 Agent 运行）
+//
+// 参数：
+//   - question: 用户问题（原样作为 user message）
+//   - aiConfigId: AI 服务 ID
+//   - agentMode: Agent 模式（""=默认, react/plan_execute/deepagents）
+//   - hitsJSON: 前端 SearchAllKnowledge 返回结果的 JSON 字符串（[]UnifiedKnowledgeHit）
+//
+// 前端可通过 AbortChatWithAgent 中止（共享同一 cancel）。
+func (a *App) ChatWithAgentKBQA(question string, aiConfigId int, agentMode, hitsJSON string) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.SugaredLogger.Errorf("ChatWithAgentKBQA panic: %v", r)
+			runtime.EventsEmit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(&schema.Message{
+				Role:    schema.Assistant,
+				Content: fmt.Sprintf("❌ 知识库问答异常: %v", r),
+			}))
+			runtime.EventsEmit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(&schema.Message{
+				Role:    schema.Assistant,
+				Content: "agent-DONE",
+			}))
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a.agentMu.Lock()
+	if a.agentCancel != nil {
+		a.agentCancel()
+	}
+	a.agentCancel = cancel
+	a.agentMu.Unlock()
+
+	defer func() {
+		a.agentMu.Lock()
+		a.agentCancel = nil
+		a.agentMu.Unlock()
+	}()
+
+	// 解析前端传入的命中片段，构造知识库问答系统提示词
+	var hits []agent.UnifiedKnowledgeHit
+	if strings.TrimSpace(hitsJSON) != "" {
+		if err := json.Unmarshal([]byte(hitsJSON), &hits); err != nil {
+			logger.SugaredLogger.Warnf("ChatWithAgentKBQA: 解析 hitsJSON 失败，将以无上下文方式回答: %v", err)
+			hits = nil
+		}
+	}
+	sysPromptOverride := agent.BuildKBQASystemPrompt(hits)
+
+	// sysPromptId=nil（使用 override）, memoryMode=false, memoryCount=0, thinkingMode=false, sessionId=""
+	ch := agent.NewStockAiAgentApi().ChatWithContext(ctx, question, aiConfigId, nil, false, 0, false, agentMode, sysPromptOverride, "")
+	for msg := range ch {
+		runtime.EventsEmit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(msg))
+	}
+	runtime.EventsEmit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(&schema.Message{
 		Role:    schema.Assistant,
 		Content: "agent-DONE",
 	}))
@@ -465,6 +604,13 @@ func (a *App) GetAiRecommendStocksList(query models.AiRecommendStocksQuery) *mod
 		return &models.AiRecommendStocksPageData{}
 	}
 	return page
+}
+func (a *App) GetAiRecommendStocksTodayStats(date string, days int) *models.AiRecommendStocksTodayStatsData {
+	stats, err := data.NewAiRecommendStocksService().GetAiRecommendStocksTodayStats(date, days)
+	if err != nil {
+		return &models.AiRecommendStocksTodayStatsData{}
+	}
+	return stats
 }
 func (a *App) DeleteAiRecommendStocks(id uint) string {
 	err := data.NewAiRecommendStocksService().DeleteAiRecommendStocks(id)
@@ -649,4 +795,9 @@ func (a *App) GetConceptFundFlowTopListByDate(date string, topN int) []models.Co
 // GetAllConceptCodes 获取所有概念代码
 func (a *App) GetAllConceptCodes() []map[string]string {
 	return data.NewConceptFundFlowApi().GetAllConceptCodes()
+}
+
+// GetBKConstituentStocks 获取板块/概念的成分股实时行情（按主力净流入降序）
+func (a *App) GetBKConstituentStocks(bkCode string) []models.BKConstituentStock {
+	return data.NewBKConstituentsApi().GetBKConstituentStocks(bkCode)
 }
