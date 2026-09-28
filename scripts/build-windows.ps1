@@ -44,8 +44,14 @@ try {
     $env:GOTELEMETRY = "off"
     $env:GOTELEMETRYDIR = $repoGoTelemetryDir
 
+    $wailsVersion = (go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2).Trim()
+    if ([string]::IsNullOrWhiteSpace($wailsVersion)) {
+        throw "Unable to resolve the Wails version from go.mod"
+    }
+    $wailsPackage = "github.com/wailsapp/wails/v2/cmd/wails@$wailsVersion"
+
     Invoke-NativeCommand -Name "go-stock-cli build" -Command { go build -o (Join-Path $repoRoot "go-stock-cli.exe") .\cmd\go-stock-cli }
-    Invoke-NativeCommand -Name "wails build" -Command { wails build --clean --platform windows/amd64 }
+    Invoke-NativeCommand -Name "wails build" -Command { go run $wailsPackage build --clean --platform windows/amd64 }
     New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
     Copy-Item (Join-Path $repoRoot "build\bin\go-stock.exe") (Join-Path $releaseDir "go-stock.exe") -Force
     Copy-Item (Join-Path $repoRoot "go-stock-cli.exe") (Join-Path $releaseDir "go-stock-cli.exe") -Force
