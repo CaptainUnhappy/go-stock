@@ -50,7 +50,11 @@ try {
     }
     $wailsPackage = "github.com/wailsapp/wails/v2/cmd/wails@$wailsVersion"
 
-    Invoke-NativeCommand -Name "go-stock-cli build" -Command { go build -o (Join-Path $repoRoot "go-stock-cli.exe") .\cmd\go-stock-cli }
+    # Keep the standalone CLI deterministic and avoid embedding local paths, VCS metadata,
+    # and the Go symbol/debug tables that have triggered Defender heuristic false positives.
+    Invoke-NativeCommand -Name "go-stock-cli build" -Command {
+        go build -trimpath -buildvcs=false -ldflags "-s -w" -o (Join-Path $repoRoot "go-stock-cli.exe") .\cmd\go-stock-cli
+    }
     Invoke-NativeCommand -Name "wails build" -Command { go run $wailsPackage build --clean --platform windows/amd64 }
     New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
     Copy-Item (Join-Path $repoRoot "build\bin\go-stock.exe") (Join-Path $releaseDir "go-stock.exe") -Force

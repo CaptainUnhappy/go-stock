@@ -1,5 +1,5 @@
 <script setup>
-import {computed, h, onBeforeMount, onBeforeUnmount, onMounted,onUnmounted, ref,reactive} from 'vue'
+import {computed, h, onBeforeMount, onBeforeUnmount, onMounted, ref, reactive, watch} from 'vue'
 import {useRouter} from 'vue-router'
 import {
   GetAiRecommendStocksList,
@@ -14,6 +14,7 @@ import {
 } from "../../wailsjs/go/main/App";
 import {NAvatar, NButton, NEllipsis, NSwitch, NTag, NText, useMessage, useNotification} from "naive-ui";
 import StockLightweightKlineChart from "./StockLightweightKlineChart.vue";
+import { KLINE_MODAL_CONTENT_STYLE, KLINE_MODAL_STYLE, useKlineModalFit } from "./kline/useKlineModalFit";
 import sparkLine from "./stockSparkLine.vue"
 import {MdPreview} from "md-editor-v3";
 import {format} from "date-fns";
@@ -100,6 +101,21 @@ const columnsRef = ref([
     key: 'modelName',
     render(row, index) {
       return h(NText, { type: "info" }, { default: () => row.modelName })
+    }
+  },
+  {
+    // 追溯用：AI 配置名（用户自定义）+ 提示词模板版本 + 策略提示词哈希前 8 位
+    title: '配置/提示词',
+    key: 'configName',
+    width: 160,
+    ellipsis: { tooltip: true },
+    render(row) {
+      const name = row.configName || '—'
+      const extra = [
+        row.sysPromptVersion ? `v${row.sysPromptVersion}` : '',
+        row.promptHash ? row.promptHash.slice(0, 8) : ''
+      ].filter(Boolean).join(' ')
+      return h(NText, { type: "info" }, { default: () => (extra ? `${name} · ${extra}` : name) })
     }
   },
   {
@@ -351,6 +367,12 @@ const modalDataRef = reactive({
   /** 关联的系统提示词与用户提示词，用于追溯本次推荐的生成上下文 */
   systemPrompt: "",
   userPrompt: "",
+  /** 归因用：用户自定义 AI 配置名 */
+  configName: "",
+  /** 归因用：策略提示词哈希（SHA-256 前 16 位） */
+  promptHash: "",
+  /** 归因用：系统提示词模板版本号（0=内置/无模板） */
+  sysPromptVersion: 0,
   /** 是否显示生成上下文（默认收起，需点击按钮展开） */
   showContext: false,
   /** 传给 K 线组件的多单价位（与 StockLightweightKlineChart v-model 同步） */
@@ -363,19 +385,16 @@ const theme = computed(() => {
   return editorDataRef.darkTheme ? 'dark' : 'light'
 })
 
-// 查看弹窗 K 线图高度：随视口自适应，占满可用空间（弹窗下方还有内容/风险/上下文卡片）
-const klineChartHeight = ref(400)
-function updateKlineChartHeight() {
-  const vh = window.innerHeight || 800
-  // 约 55% 视口高度，上下限 400~700
-  klineChartHeight.value = Math.min(700, Math.max(400, Math.floor(vh * 0.55)))
-}
-onMounted(() => {
-  updateKlineChartHeight()
-  window.addEventListener('resize', updateKlineChartHeight)
-})
-onUnmounted(() => {
-  window.removeEventListener('resize', updateKlineChartHeight)
+// 查看弹窗：宽度与全站其他 K 线弹窗统一；图表下方还有内容/风险/上下文卡片，故取比例高度不参与铺满收敛
+const klineWrapRef = ref(null)
+const { chartHeight: klineChartHeight, attach: attachKlineFit, detach: detachKlineFit } = useKlineModalFit(klineWrapRef, { scrollable: true })
+
+watch(() => modalDataRef.visible, (v) => {
+  if (v) {
+    attachKlineFit()
+    return
+  }
+  detachKlineFit()
 })
 
 
@@ -498,6 +517,9 @@ function showDetail(row) {
   modalDataRef.modelName = row.modelName || ""
   modalDataRef.systemPrompt = row.systemPrompt || ""
   modalDataRef.userPrompt = row.userPrompt || ""
+  modalDataRef.configName = row.configName || ""
+  modalDataRef.promptHash = row.promptHash || ""
+  modalDataRef.sysPromptVersion = row.sysPromptVersion || 0
   modalDataRef.showContext = false
   modalDataRef.longEntryPrice = recommendRangeToSinglePrice(row.recommendBuyPrice)
   modalDataRef.longStopLossPrice = recommendRangeToSinglePrice(row.recommendStopLossPrice)
@@ -811,19 +833,32 @@ const tableHeightStyle = {
     </n-tab-pane>
   </n-tabs>
 
-  <n-modal v-model:show="modalDataRef.visible" :title="modalDataRef.title" preset="card" style="max-width: 1400px;">
+  <n-modal
+    v-model:show="modalDataRef.visible"
+    :title="modalDataRef.title"
+    preset="card"
+    :style="KLINE_MODAL_STYLE"
+    :content-style="{
+      ...KLINE_MODAL_CONTENT_STYLE,
+      overflowY: 'auto',
+      // 图表之外还有内容/风险/上下文卡片，给它们留出空间后仍让整卡控制在 94vh 内
+      maxHeight: 'calc(94vh - 120px)',
+    }"
+  >
     <n-gradient-text :size="16" type="warning">{{modalDataRef.remarks}}</n-gradient-text>
     <n-card size="small">
-      <StockLightweightKlineChart
-        style="width: 100%;"
-        :code="modalDataRef.stockCode"
-        :chart-height="klineChartHeight"
-        :stock-name="modalDataRef.stockName"
-        :dark-theme="editorDataRef.darkTheme"
-        v-model:long-entry-price="modalDataRef.longEntryPrice"
-        v-model:long-stop-loss-price="modalDataRef.longStopLossPrice"
-        v-model:long-take-profit-price="modalDataRef.longTakeProfitPrice"
-      />
+      <div ref="klineWrapRef">
+        <StockLightweightKlineChart
+          style="width: 100%;"
+          :code="modalDataRef.stockCode"
+          :chart-height="klineChartHeight"
+          :stock-name="modalDataRef.stockName"
+          :dark-theme="editorDataRef.darkTheme"
+          v-model:long-entry-price="modalDataRef.longEntryPrice"
+          v-model:long-stop-loss-price="modalDataRef.longStopLossPrice"
+          v-model:long-take-profit-price="modalDataRef.longTakeProfitPrice"
+        />
+      </div>
     </n-card>
     <n-card size="small">
     <n-text type="info">{{modalDataRef.content}}</n-text>
@@ -832,7 +867,7 @@ const tableHeightStyle = {
     </n-card>
     <n-card size="small" v-if="modalDataRef.systemPrompt || modalDataRef.userPrompt">
       <div style="display:flex; align-items:center; gap:8px; margin-bottom: 8px;">
-        <n-text depth="3">生成上下文（模型：{{modalDataRef.modelName}}）</n-text>
+        <n-text depth="3">生成上下文（模型：{{modalDataRef.modelName}}<template v-if="modalDataRef.configName">；配置：{{modalDataRef.configName}}</template><template v-if="modalDataRef.sysPromptVersion || modalDataRef.promptHash">；模板 v{{modalDataRef.sysPromptVersion || 0 }} / 哈希 {{(modalDataRef.promptHash || '').slice(0, 8) || '—'}}</template>）</n-text>
         <n-button size="tiny" type="info" tertiary @click="modalDataRef.showContext = !modalDataRef.showContext">
           {{ modalDataRef.showContext ? '收起上下文' : '查看生成上下文' }}
         </n-button>

@@ -6,6 +6,7 @@ import (
 	"go-stock/backend/appdata"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -84,7 +85,7 @@ func Init(sqlitePath string) {
 			LogLevel:                  logger.Silent,
 		},
 	)
-	if sqlitePath == "" {
+	if strings.TrimSpace(sqlitePath) == "" {
 		var err error
 		sqlitePath, err = appdata.DefaultDBPath()
 		if err != nil {
@@ -92,6 +93,12 @@ func Init(sqlitePath string) {
 		}
 	}
 	dbFilePath = resolveDBPath(sqlitePath)
+	// 兜底确保库文件所在目录存在，避免因目录缺失导致 `unable to open database file`
+	if dir := filepath.Dir(dbFilePath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			log.Fatalf("create db dir %s error is %s", dir, err.Error())
+		}
+	}
 	openDb, err := gorm.Open(sqlite.New(sqlite.Config{DriverName: "sqlite", DSN: sqliteDSN(sqlitePath)}), &gorm.Config{
 		Logger:                                   dbLogger,
 		DisableForeignKeyConstraintWhenMigrating: true,

@@ -22,10 +22,15 @@ export namespace agent {
 	    excessPct: number;
 	    outcome: string;
 	    modelName: string;
+	    configName: string;
 	    systemPrompt: string;
 	    userPrompt: string;
 	    sysPromptId: number;
+	    promptHash: string;
+	    sysPromptVersion: number;
 	    skillId: string;
+	    buyPremiumPct: number;
+	    adjReturnPct: number;
 	    recommendTimeStr: string;
 
 	    static createFrom(source: any = {}) {
@@ -51,10 +56,15 @@ export namespace agent {
 	        this.excessPct = source["excessPct"];
 	        this.outcome = source["outcome"];
 	        this.modelName = source["modelName"];
+	        this.configName = source["configName"];
 	        this.systemPrompt = source["systemPrompt"];
 	        this.userPrompt = source["userPrompt"];
 	        this.sysPromptId = source["sysPromptId"];
+	        this.promptHash = source["promptHash"];
+	        this.sysPromptVersion = source["sysPromptVersion"];
 	        this.skillId = source["skillId"];
+	        this.buyPremiumPct = source["buyPremiumPct"];
+	        this.adjReturnPct = source["adjReturnPct"];
 	        this.recommendTimeStr = source["recommendTimeStr"];
 	    }
 
@@ -202,7 +212,12 @@ export namespace agent {
 	    winRate: number;
 	    avgReturn: number;
 	    avgExcess: number;
-
+	    avgAdjReturn: number;
+	    adjWinRate: number;
+	    avgWinReturn: number;
+	    avgLoseReturn: number;
+	    profitLossRatio: number;
+	
 	    static createFrom(source: any = {}) {
 	        return new GroupStat(source);
 	    }
@@ -216,6 +231,11 @@ export namespace agent {
 	        this.winRate = source["winRate"];
 	        this.avgReturn = source["avgReturn"];
 	        this.avgExcess = source["avgExcess"];
+	        this.avgAdjReturn = source["avgAdjReturn"];
+	        this.adjWinRate = source["adjWinRate"];
+	        this.avgWinReturn = source["avgWinReturn"];
+	        this.avgLoseReturn = source["avgLoseReturn"];
+	        this.profitLossRatio = source["profitLossRatio"];
 	    }
 	}
 	export class RatingStat {
@@ -236,16 +256,24 @@ export namespace agent {
 	}
 	export class BacktestStats {
 	    total: number;
+	    rawRows: number;
 	    win: number;
 	    lose: number;
 	    winRate: number;
+	    adjWinRate: number;
+	    avgAdjReturn: number;
+	    avgWinReturn: number;
+	    avgLoseReturn: number;
+	    profitLossRatio: number;
 	    pending: number;
 	    byRating: Record<string, RatingStat>;
 	    byModel: GroupStat[];
+	    byConfigName: GroupStat[];
 	    bySystemPrompt: GroupStat[];
 	    byUserPrompt: GroupStat[];
 	    byTemplate: TemplateStat[];
 	    bySkill: GroupStat[];
+	    byDiscountBucket: GroupStat[];
 	    bestModel?: GroupStat;
 	    bestSystemPrompt?: GroupStat;
 	    bestUserPrompt?: GroupStat;
@@ -258,16 +286,24 @@ export namespace agent {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total = source["total"];
+	        this.rawRows = source["rawRows"];
 	        this.win = source["win"];
 	        this.lose = source["lose"];
 	        this.winRate = source["winRate"];
+	        this.adjWinRate = source["adjWinRate"];
+	        this.avgAdjReturn = source["avgAdjReturn"];
+	        this.avgWinReturn = source["avgWinReturn"];
+	        this.avgLoseReturn = source["avgLoseReturn"];
+	        this.profitLossRatio = source["profitLossRatio"];
 	        this.pending = source["pending"];
 	        this.byRating = this.convertValues(source["byRating"], RatingStat, true);
 	        this.byModel = this.convertValues(source["byModel"], GroupStat);
+	        this.byConfigName = this.convertValues(source["byConfigName"], GroupStat);
 	        this.bySystemPrompt = this.convertValues(source["bySystemPrompt"], GroupStat);
 	        this.byUserPrompt = this.convertValues(source["byUserPrompt"], GroupStat);
 	        this.byTemplate = this.convertValues(source["byTemplate"], TemplateStat);
 	        this.bySkill = this.convertValues(source["bySkill"], GroupStat);
+	        this.byDiscountBucket = this.convertValues(source["byDiscountBucket"], GroupStat);
 	        this.bestModel = this.convertValues(source["bestModel"], GroupStat);
 	        this.bestSystemPrompt = this.convertValues(source["bestSystemPrompt"], GroupStat);
 	        this.bestUserPrompt = this.convertValues(source["bestUserPrompt"], GroupStat);
@@ -1189,6 +1225,367 @@ export namespace data {
 	        this.minChange = source["minChange"];
 	        this.maxChange = source["maxChange"];
 	        this.searchKeyWord = source["searchKeyWord"];
+	    }
+	}
+	export class BinanceDerivativesPoint {
+	    timestamp: number;
+	    value: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new BinanceDerivativesPoint(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.timestamp = source["timestamp"];
+	        this.value = source["value"];
+	    }
+	}
+	export class BinanceFundingRate {
+	    symbol: string;
+	    fundingTime: number;
+	    fundingRate: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BinanceFundingRate(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.symbol = source["symbol"];
+	        this.fundingTime = source["fundingTime"];
+	        this.fundingRate = source["fundingRate"];
+	    }
+	}
+	export class BinanceDerivativesBundle {
+	    symbol: string;
+	    name: string;
+	    markPrice: number;
+	    indexPrice: number;
+	    lastPrice: number;
+	    basis: number;
+	    lastFundingRate: number;
+	    nextFundingTime: number;
+	    annualizedRate: number;
+	    openInterest: number;
+	    openInterestValue: number;
+	    longShortRatio: number;
+	    longAccount: number;
+	    shortAccount: number;
+	    takerBuySellRatio: number;
+	    openInterestChange: number;
+	    fundingRateHistory: BinanceFundingRate[];
+	    openInterestHistory: BinanceDerivativesPoint[];
+	    longShortHistory: BinanceDerivativesPoint[];
+	
+	    static createFrom(source: any = {}) {
+	        return new BinanceDerivativesBundle(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.symbol = source["symbol"];
+	        this.name = source["name"];
+	        this.markPrice = source["markPrice"];
+	        this.indexPrice = source["indexPrice"];
+	        this.lastPrice = source["lastPrice"];
+	        this.basis = source["basis"];
+	        this.lastFundingRate = source["lastFundingRate"];
+	        this.nextFundingTime = source["nextFundingTime"];
+	        this.annualizedRate = source["annualizedRate"];
+	        this.openInterest = source["openInterest"];
+	        this.openInterestValue = source["openInterestValue"];
+	        this.longShortRatio = source["longShortRatio"];
+	        this.longAccount = source["longAccount"];
+	        this.shortAccount = source["shortAccount"];
+	        this.takerBuySellRatio = source["takerBuySellRatio"];
+	        this.openInterestChange = source["openInterestChange"];
+	        this.fundingRateHistory = this.convertValues(source["fundingRateHistory"], BinanceFundingRate);
+	        this.openInterestHistory = this.convertValues(source["openInterestHistory"], BinanceDerivativesPoint);
+	        this.longShortHistory = this.convertValues(source["longShortHistory"], BinanceDerivativesPoint);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	export class BinanceLongShortRatio {
+	    symbol: string;
+	    longShortRatio: string;
+	    longAccount: string;
+	    shortAccount: string;
+	    buySellRatio: string;
+	    buyVol: string;
+	    sellVol: string;
+	    timestamp: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new BinanceLongShortRatio(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.symbol = source["symbol"];
+	        this.longShortRatio = source["longShortRatio"];
+	        this.longAccount = source["longAccount"];
+	        this.shortAccount = source["shortAccount"];
+	        this.buySellRatio = source["buySellRatio"];
+	        this.buyVol = source["buyVol"];
+	        this.sellVol = source["sellVol"];
+	        this.timestamp = source["timestamp"];
+	    }
+	}
+	export class BinanceOpenInterestHist {
+	    symbol: string;
+	    sumOpenInterest: string;
+	    sumOpenInterestValue: string;
+	    timestamp: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new BinanceOpenInterestHist(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.symbol = source["symbol"];
+	        this.sumOpenInterest = source["sumOpenInterest"];
+	        this.sumOpenInterestValue = source["sumOpenInterestValue"];
+	        this.timestamp = source["timestamp"];
+	    }
+	}
+	export class BinancePremiumIndex {
+	    symbol: string;
+	    markPrice: string;
+	    indexPrice: string;
+	    lastFundingRate: string;
+	    nextFundingTime: number;
+	    time: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new BinancePremiumIndex(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.symbol = source["symbol"];
+	        this.markPrice = source["markPrice"];
+	        this.indexPrice = source["indexPrice"];
+	        this.lastFundingRate = source["lastFundingRate"];
+	        this.nextFundingTime = source["nextFundingTime"];
+	        this.time = source["time"];
+	    }
+	}
+	export class BinanceSymbolInfo {
+	    symbol: string;
+	    baseAsset: string;
+	    displayName: string;
+	    pricePrecision: number;
+	    onboardDate: number;
+	    isTradFi: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new BinanceSymbolInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.symbol = source["symbol"];
+	        this.baseAsset = source["baseAsset"];
+	        this.displayName = source["displayName"];
+	        this.pricePrecision = source["pricePrecision"];
+	        this.onboardDate = source["onboardDate"];
+	        this.isTradFi = source["isTradFi"];
+	    }
+	}
+	export class BinanceTicker24h {
+	    symbol: string;
+	    lastPrice: string;
+	    priceChange: string;
+	    priceChangePercent: string;
+	    openPrice: string;
+	    highPrice: string;
+	    lowPrice: string;
+	    volume: string;
+	    quoteVolume: string;
+	    weightedAvgPrice: string;
+	    openTime: number;
+	    closeTime: number;
+	    count: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new BinanceTicker24h(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.symbol = source["symbol"];
+	        this.lastPrice = source["lastPrice"];
+	        this.priceChange = source["priceChange"];
+	        this.priceChangePercent = source["priceChangePercent"];
+	        this.openPrice = source["openPrice"];
+	        this.highPrice = source["highPrice"];
+	        this.lowPrice = source["lowPrice"];
+	        this.volume = source["volume"];
+	        this.quoteVolume = source["quoteVolume"];
+	        this.weightedAvgPrice = source["weightedAvgPrice"];
+	        this.openTime = source["openTime"];
+	        this.closeTime = source["closeTime"];
+	        this.count = source["count"];
+	    }
+	}
+	export class BitgetFundingRate {
+	    symbol: string;
+	    fundingRate: string;
+	    fundingTime: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new BitgetFundingRate(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.symbol = source["symbol"];
+	        this.fundingRate = source["fundingRate"];
+	        this.fundingTime = source["fundingTime"];
+	    }
+	}
+	export class BitgetDerivativesBundle {
+	    symbol: string;
+	    name: string;
+	    lastPrice: number;
+	    markPrice: number;
+	    indexPrice: number;
+	    basis: number;
+	    fundingRate: number;
+	    ratePeriod: number;
+	    nextFundingTime: number;
+	    annualizedRate: number;
+	    openInterest: number;
+	    openInterestUsd: number;
+	    fundingRateHistory: BitgetFundingRate[];
+	
+	    static createFrom(source: any = {}) {
+	        return new BitgetDerivativesBundle(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.symbol = source["symbol"];
+	        this.name = source["name"];
+	        this.lastPrice = source["lastPrice"];
+	        this.markPrice = source["markPrice"];
+	        this.indexPrice = source["indexPrice"];
+	        this.basis = source["basis"];
+	        this.fundingRate = source["fundingRate"];
+	        this.ratePeriod = source["ratePeriod"];
+	        this.nextFundingTime = source["nextFundingTime"];
+	        this.annualizedRate = source["annualizedRate"];
+	        this.openInterest = source["openInterest"];
+	        this.openInterestUsd = source["openInterestUsd"];
+	        this.fundingRateHistory = this.convertValues(source["fundingRateHistory"], BitgetFundingRate);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class BitgetSymbolInfo {
+	    symbol: string;
+	    baseCoin: string;
+	    displayName: string;
+	    pricePlace: string;
+	    volumePlace: string;
+	    fundInterval: string;
+	    maxLever: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BitgetSymbolInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.symbol = source["symbol"];
+	        this.baseCoin = source["baseCoin"];
+	        this.displayName = source["displayName"];
+	        this.pricePlace = source["pricePlace"];
+	        this.volumePlace = source["volumePlace"];
+	        this.fundInterval = source["fundInterval"];
+	        this.maxLever = source["maxLever"];
+	    }
+	}
+	export class BitgetTicker {
+	    symbol: string;
+	    lastPr: string;
+	    bidPr: string;
+	    bidSz: string;
+	    askPr: string;
+	    askSz: string;
+	    high24h: string;
+	    low24h: string;
+	    open24h: string;
+	    change24h: string;
+	    baseVolume: string;
+	    quoteVolume: string;
+	    fundingRate: string;
+	    markPrice: string;
+	    indexPrice: string;
+	    holdingAmount: string;
+	    ts: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BitgetTicker(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.symbol = source["symbol"];
+	        this.lastPr = source["lastPr"];
+	        this.bidPr = source["bidPr"];
+	        this.bidSz = source["bidSz"];
+	        this.askPr = source["askPr"];
+	        this.askSz = source["askSz"];
+	        this.high24h = source["high24h"];
+	        this.low24h = source["low24h"];
+	        this.open24h = source["open24h"];
+	        this.change24h = source["change24h"];
+	        this.baseVolume = source["baseVolume"];
+	        this.quoteVolume = source["quoteVolume"];
+	        this.fundingRate = source["fundingRate"];
+	        this.markPrice = source["markPrice"];
+	        this.indexPrice = source["indexPrice"];
+	        this.holdingAmount = source["holdingAmount"];
+	        this.ts = source["ts"];
 	    }
 	}
 	export class ChangeRankItem {
@@ -2692,6 +3089,9 @@ export namespace data {
 	    sponsorCode: string;
 	    httpProxy: string;
 	    httpProxyEnabled: boolean;
+	    binanceProxy: string;
+	    bitgetProxy: string;
+	    enableContracts: boolean;
 	    enableAgent: boolean;
 	    qgqpBId: string;
 		    iwencaiApiKey: string;
@@ -2750,6 +3150,9 @@ export namespace data {
 	        this.sponsorCode = source["sponsorCode"];
 	        this.httpProxy = source["httpProxy"];
 	        this.httpProxyEnabled = source["httpProxyEnabled"];
+	        this.binanceProxy = source["binanceProxy"];
+	        this.bitgetProxy = source["bitgetProxy"];
+	        this.enableContracts = source["enableContracts"];
 	        this.enableAgent = source["enableAgent"];
 	        this.qgqpBId = source["qgqpBId"];
 	        this.iwencaiApiKey = source["iwencaiApiKey"];
@@ -3903,6 +4306,7 @@ export namespace models {
 	    // Go type: time
 	    dataTime?: any;
 	    modelName: string;
+	    configName: string;
 	    rating: string;
 	    stockCode: string;
 	    stockName: string;
@@ -3926,6 +4330,8 @@ export namespace models {
 	    systemPrompt: string;
 	    userPrompt: string;
 	    sysPromptId: number;
+	    promptHash: string;
+	    sysPromptVersion: number;
 	    skillId: string;
 	    enableAlert: boolean;
 
@@ -3941,6 +4347,7 @@ export namespace models {
 	        this.DeletedAt = this.convertValues(source["DeletedAt"], null);
 	        this.dataTime = this.convertValues(source["dataTime"], null);
 	        this.modelName = source["modelName"];
+	        this.configName = source["configName"];
 	        this.rating = source["rating"];
 	        this.stockCode = source["stockCode"];
 	        this.stockName = source["stockName"];
@@ -3964,6 +4371,8 @@ export namespace models {
 	        this.systemPrompt = source["systemPrompt"];
 	        this.userPrompt = source["userPrompt"];
 	        this.sysPromptId = source["sysPromptId"];
+	        this.promptHash = source["promptHash"];
+	        this.sysPromptVersion = source["sysPromptVersion"];
 	        this.skillId = source["skillId"];
 	        this.enableAlert = source["enableAlert"];
 	    }
@@ -5679,7 +6088,8 @@ export namespace models {
 	    name: string;
 	    content: string;
 	    type: string;
-
+	    version: number;
+	
 	    static createFrom(source: any = {}) {
 	        return new PromptTemplate(source);
 	    }
@@ -5692,6 +6102,7 @@ export namespace models {
 	        this.name = source["name"];
 	        this.content = source["content"];
 	        this.type = source["type"];
+	        this.version = source["version"];
 	    }
 
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

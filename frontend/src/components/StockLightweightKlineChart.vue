@@ -9,7 +9,7 @@ import {
   LineStyle,
   MismatchDirection,
 } from 'lightweight-charts'
-import { NButton, NDropdown, NFlex, NInput, NModal, NSpin, NText, NTooltip, useMessage } from 'naive-ui'
+import { NButton, NDropdown, NFlex, NInput, NModal, NText, NTooltip, useMessage } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   smaValues, emaFinite, emaLeadingNull, weightedMaValues, bollingerBands, obvValues,
@@ -28,7 +28,7 @@ import { makeToggle } from './kline/indicators/toggle'
 import { parseNumStr, formatPrice2, formatVolumeCn, formatAmountCn, formatPctField, formatSigned2 } from './kline/format'
 import { createMeasurePrimitive } from './kline/measurePrimitive'
 import { createWavePrimitive } from './kline/wavePrimitive'
-import { createVolumeProfilePrimitive } from './kline/volumeProfilePrimitive'
+import { createVolumeProfilePrimitive, POC_COLOR } from './kline/volumeProfilePrimitive'
 import { createTDSequentialPrimitive } from './kline/tdSequentialPrimitive'
 import { createDivergencePrimitive } from './kline/divergencePrimitive'
 import { createBuySellPrimitive } from './kline/buySellPrimitive'
@@ -108,10 +108,17 @@ const isGlobalIndexCode = computed(() => {
   // 海外指数代码为字母（DJIA/SPX/NDX/HSI），排除纯数字后缀
   return !/[0-9]/.test(suffix)
 })
-// 复权类型：qfq=前复权(默认)、hfq=后复权、none=不复权；仅日K及更长周期有效；场内 ETF/港股/中证指数/海外指数默认 none
-const activeAdjust = ref((isEtfCode.value || isHkCode.value || isCsiIndexCode.value || isGlobalIndexCode.value) ? 'none' : DEFAULT_ADJUST)
-// 实际传给后端的复权标识：分时周期传空串（走各数据源默认行为），日K类周期传 activeAdjust
+// 币安 USDT-M 永续合约识别：bn: 前缀（如 bn:BTCUSDT，后端统一小写 bn:btcusdt）；
+// 属加密合约独立行情体系，无 A 股复权/涨跌停概念
+const isBinanceCode = computed(() => String(props.code || '').toUpperCase().startsWith('BN:'))
+// Bitget 美股永续合约识别：bt: 前缀（如 bt:AAPLUSDT，后端统一小写 bt:aaplusdt）；
+// 同属合约独立行情体系，无 A 股复权/涨跌停概念
+const isBitgetCode = computed(() => String(props.code || '').toUpperCase().startsWith('BT:'))
+// 复权类型：qfq=前复权(默认)、hfq=后复权、none=不复权；仅日K及更长周期有效；场内 ETF/港股/中证指数/海外指数/币安合约/美股永续默认 none
+const activeAdjust = ref((isEtfCode.value || isHkCode.value || isCsiIndexCode.value || isGlobalIndexCode.value || isBinanceCode.value || isBitgetCode.value) ? 'none' : DEFAULT_ADJUST)
+// 实际传给后端的复权标识：分时周期传空串（走各数据源默认行为），日K类周期传 activeAdjust；币安合约/美股永续恒为 none
 const adjustFlagForRequest = computed(() => {
+  if (isBinanceCode.value || isBitgetCode.value) return 'none'
   return DAILY_LIKE_KLT.has(activeKlt.value) ? activeAdjust.value : ''
 })
 
@@ -442,6 +449,9 @@ let wavePrimitive = null
 let volumeProfilePrimitive = null
 /** VPVR 用的 OHLCV 缓存（按 mergedRawRowsVersion 失效，避免每帧重排序） */
 const volumeProfileBarsCache = { version: -1, data: null }
+/** POC 数值标签（挂在价格刻度上；横向虚线仍由 primitive 画，这里只取轴上的 tag） */
+let pocPriceLineHandle = null
+let pocTagRaf = 0
 /** 「神奇九转」primitive 实例（数字标记叠加层） */
 let tdSequentialPrimitive = null
 /** 九转计数缓存（按 mergedRawRowsVersion 失效） */
@@ -517,12 +527,27 @@ const loadingHistory = ref(false)
 const errorText = ref('')
 const activeDataSource = ref('')
 
+// 左侧指标栏收起状态（记忆上次选择，避免每次进来重新收）
+const SIDEBAR_COLLAPSED_KEY = 'kline-sidebar-collapsed'
+const sidebarCollapsed = ref(false)
+
+/** 收起/展开左侧指标栏，把宽度让给 K 线 */
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed.value ? '1' : '0')
+  } catch {}
+}
+
 /** 通达信MAC 数据源（本地行情服务器）的实时轮询间隔：比默认 60 秒更密，用于短线盯盘 */
 const MAC_POLL_INTERVAL_MS = 10000
-/** 实际生效的轮询间隔：MAC 数据源用 10 秒，其余沿用父组件传入值 */
-const pollIntervalMs = computed(() =>
-  activeDataSource.value === 'tdx-mac' ? MAC_POLL_INTERVAL_MS : props.realtimeIntervalMs,
-)
+/** 永续合约（币安 bn: / Bitget bt:）K 线轮询间隔：7×24 交易、波动快，固定 5 秒 */
+const CONTRACT_POLL_INTERVAL_MS = 5000
+/** 实际生效的轮询间隔：合约 5 秒，MAC 数据源 10 秒，其余沿用父组件传入值 */
+const pollIntervalMs = computed(() => {
+  if (isBinanceCode.value || isBitgetCode.value) return CONTRACT_POLL_INTERVAL_MS
+  return activeDataSource.value === 'tdx-mac' ? MAC_POLL_INTERVAL_MS : props.realtimeIntervalMs
+})
 
 let chart = null
 let candleSeries = null
@@ -3537,9 +3562,53 @@ function getVolumeProfileBars() {
   return volumeProfileBarsCache.data
 }
 
+/** 移除价格刻度上的 POC 数值标签 */
+function clearPocPriceLine() {
+  if (pocTagRaf) {
+    cancelAnimationFrame(pocTagRaf)
+    pocTagRaf = 0
+  }
+  if (pocPriceLineHandle && candleSeries) {
+    try { candleSeries.removePriceLine(pocPriceLineHandle) } catch { /* ignore */ }
+  }
+  pocPriceLineHandle = null
+}
+
+/** 把当前 POC 价格同步到价格刻度；price 为 null 表示当前无 POC（无数据或可见区间为空） */
+function applyPocPriceLine(price) {
+  if (!candleSeries) return
+  if (price == null) {
+    clearPocPriceLine()
+    return
+  }
+  if (pocPriceLineHandle) {
+    pocPriceLineHandle.applyOptions({ price })
+    return
+  }
+  pocPriceLineHandle = candleSeries.createPriceLine({
+    price,
+    color: POC_COLOR,
+    lineWidth: 1,
+    lineStyle: LineStyle.Dashed,
+    // 横向虚线由 volumeProfilePrimitive 绘制，这里只要刻度上那枚 POC 数值标签
+    lineVisible: false,
+    axisLabelVisible: true,
+    title: 'POC',
+  })
+}
+
+/** primitive 在图表绘制周期内回调，延到下一帧再动价格线，避免在绘制过程中改图 */
+function onPocPriceChange(price) {
+  if (pocTagRaf) cancelAnimationFrame(pocTagRaf)
+  pocTagRaf = requestAnimationFrame(() => {
+    pocTagRaf = 0
+    applyPocPriceLine(price)
+  })
+}
+
 function ensureVolumeProfilePrimitive() {
   if (volumeProfilePrimitive || !candleSeries) return
-  volumeProfilePrimitive = createVolumeProfilePrimitive(candleSeries, getVolumeProfileBars)
+  volumeProfilePrimitive = createVolumeProfilePrimitive(candleSeries, getVolumeProfileBars, onPocPriceChange)
 }
 
 /** 按开关状态挂载/卸载成交量分布 primitive（开关点击与指标重建两条路径都走这里） */
@@ -3547,11 +3616,12 @@ function syncVolumeProfilePrimitive() {
   if (showVolumeProfile.value) {
     ensureVolumeProfilePrimitive()
     volumeProfilePrimitive?.requestRedraw()
-  } else if (volumeProfilePrimitive) {
-    if (candleSeries) {
+  } else {
+    if (volumeProfilePrimitive && candleSeries) {
       try { candleSeries.detachPrimitive(volumeProfilePrimitive) } catch { /* ignore */ }
     }
     volumeProfilePrimitive = null
+    clearPocPriceLine()
   }
 }
 
@@ -3643,8 +3713,8 @@ function inferLimitPct(evidence) {
   // 注意 prop 名是 code（非 stockCode）；组件收到的代码为后缀格式（600519.SH / 000001.SZ / 00700.HK）或前缀格式（sh600519）
   const code = String(props.code || '').toUpperCase()
   if (!code) return null
-  // 港股 / 中证指数 / 海外指数 / 美股：无 A 股涨跌停概念
-  if (isHkCode.value || isCsiIndexCode.value || isGlobalIndexCode.value) return null
+  // 港股 / 中证指数 / 海外指数 / 美股 / 币安合约 / 美股永续：无 A 股涨跌停概念
+  if (isHkCode.value || isCsiIndexCode.value || isGlobalIndexCode.value || isBinanceCode.value || isBitgetCode.value) return null
   if (code.endsWith('.US') || code.startsWith('US')) return null
   // 提取数字部分（兼容 600519.SH / sh600519 / 600519 等）
   const digits = code.replace(/[^\d]/g, '')
@@ -4753,6 +4823,7 @@ function disposeChart() {
       try { candleSeries.detachPrimitive(volumeProfilePrimitive) } catch { /* ignore */ }
     }
     volumeProfilePrimitive = null
+    clearPocPriceLine()
     if (tdSequentialPrimitive && candleSeries) {
       try { candleSeries.detachPrimitive(tdSequentialPrimitive) } catch { /* ignore */ }
     }
@@ -4893,7 +4964,7 @@ async function loadOlderHistory() {
   }
   const kltSnap = activeKlt.value
   const codeSnap = props.code
-  const adjustSnap = DAILY_LIKE_KLT.has(kltSnap) ? activeAdjust.value : ''
+  const adjustSnap = adjustFlagForRequest.value
   const oldest = mergedRawRows[0]
   const end = formatEastMoneyEndFromOldest(oldest.day, kltSnap)
   if (!end) {
@@ -4959,7 +5030,7 @@ async function refreshLatestPoll() {
   pollInFlight = true
   const kltSnap = activeKlt.value
   const codeSnap = props.code
-  const adjustSnap = DAILY_LIKE_KLT.has(kltSnap) ? activeAdjust.value : ''
+  const adjustSnap = adjustFlagForRequest.value
   try {
     const meta = INTERVALS.find((x) => x.klt === kltSnap) || INTERVALS[0]
     const result = await GetStockKLineWithFallback(
@@ -5127,8 +5198,15 @@ async function loadData() {
     syncDefaultLatestPanelRow()
     const { candles } = toSeriesData(mergedRawRows)
     if (!candles.length) {
-      errorText.value =
-        '暂无 K 线数据（如 600519.SH、000001.SZ、00700.HK、AAPL.US）'
+      errorText.value = isBinanceCode.value
+        ? (src === 'binance-futures-invalid-symbol'
+            ? '币安合约代码无效（示例：bn:BTCUSDT）'
+            : '币安合约数据不可达：请在「设置 → 币安合约代理」中配置专用代理后重试')
+        : isBitgetCode.value
+          ? (src === 'bitget-futures-invalid-symbol'
+              ? '美股永续合约代码无效（示例：bt:AAPLUSDT）'
+              : '美股永续合约数据不可达：请在「设置 → Bitget合约代理」中配置专用代理后重试')
+          : '暂无 K 线数据（如 600519.SH、000001.SZ、00700.HK、AAPL.US）'
       candleSeries?.setData([])
       volSeries?.setData([])
       syncIndicators()
@@ -5388,6 +5466,9 @@ watch(longCostStr, (v) => {
 })
 
 onMounted(() => {
+  try {
+    sidebarCollapsed.value = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
+  } catch {}
   // 任意交互即预热音频上下文（自动播放策略要求手势后才能出声），并持续在手势中恢复
   window.addEventListener('pointerdown', primeAlertAudioOnGesture)
   window.addEventListener('keydown', primeAlertAudioOnGesture)
@@ -5441,9 +5522,9 @@ watch(activeAdjust, () => {
   loadData()
 })
 
-// 代码切换时（调用方未用 :key 重建组件的防御性处理）按 ETF/港股/中证指数/海外指数规则重置复权默认值
+// 代码切换时（调用方未用 :key 重建组件的防御性处理）按 ETF/港股/中证指数/海外指数/币安合约/美股永续规则重置复权默认值
 watch(() => props.code, () => {
-  const next = (isEtfCode.value || isHkCode.value || isCsiIndexCode.value || isGlobalIndexCode.value) ? 'none' : DEFAULT_ADJUST
+  const next = (isEtfCode.value || isHkCode.value || isCsiIndexCode.value || isGlobalIndexCode.value || isBinanceCode.value || isBitgetCode.value) ? 'none' : DEFAULT_ADJUST
   if (activeAdjust.value !== next) {
     activeAdjust.value = next
   }
@@ -5494,12 +5575,12 @@ watch(showLongPosition, (newVal) => {
 <template>
   <div class="lw-kline-root" :class="{ 'lw-kline--dark': darkTheme }">
     <div class="lw-kline-body">
-      <div class="lw-kline-sidebar">
-        <div class="lw-kline-sidebar__inner">
+      <div class="lw-kline-sidebar" :class="{ 'lw-kline-sidebar--collapsed': sidebarCollapsed }">
+        <div v-show="!sidebarCollapsed" class="lw-kline-sidebar__inner">
           <NFlex vertical :size="6">
             <div class="lw-kline-sidebar__section">
               <NText depth="3" style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 4px; padding: 2px 6px; background: rgba(239,68,68,0.08); border-radius: 4px; border-left: 3px solid #ef4444; color: #ef4444">📈趋势</NText>
-              <NFlex :size="4" wrap style="row-gap: 4px">
+              <div class="lw-kline-sidebar__group">
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showMA ? 'primary' : 'default'" :secondary="!showMA" @click="toggleMA">MA</NButton>
@@ -5518,7 +5599,7 @@ watch(showLongPosition, (newVal) => {
                   </template>
                   <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.bbi }}</span>
                 </NTooltip>
-                <NTooltip :delay="500" placement="right-start">
+                <NTooltip v-if="!isBinanceCode && !isBitgetCode" :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showLimitLines ? 'primary' : 'default'" :secondary="!showLimitLines" @click="toggleLimitLines">涨跌停</NButton>
                   </template>
@@ -5590,11 +5671,11 @@ watch(showLongPosition, (newVal) => {
                   </template>
                   <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.temaSlope }}</span>
                 </NTooltip>
-              </NFlex>
+              </div>
             </div>
             <div class="lw-kline-sidebar__section">
               <NText depth="3" style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 4px; padding: 2px 6px; background: rgba(245,158,11,0.08); border-radius: 4px; border-left: 3px solid #f59e0b; color: #d97706">🎢波动</NText>
-              <NFlex :size="4" wrap style="row-gap: 4px">
+              <div class="lw-kline-sidebar__group">
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showBOLL ? 'primary' : 'default'" :secondary="!showBOLL" @click="toggleBOLL">BOLL</NButton>
@@ -5655,11 +5736,11 @@ watch(showLongPosition, (newVal) => {
                   </template>
                   <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.smc }}</span>
                 </NTooltip>
-              </NFlex>
+              </div>
             </div>
             <div class="lw-kline-sidebar__section">
               <NText depth="3" style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 4px; padding: 2px 6px; background: rgba(59,130,246,0.08); border-radius: 4px; border-left: 3px solid #3b82f6; color: #2563eb">💫动量</NText>
-              <NFlex :size="4" wrap style="row-gap: 4px">
+              <div class="lw-kline-sidebar__group">
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showMACD ? 'primary' : 'default'" :secondary="!showMACD" @click="toggleMACD">MACD</NButton>
@@ -5738,11 +5819,11 @@ watch(showLongPosition, (newVal) => {
                   </template>
                   <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.coppock }}</span>
                 </NTooltip>
-              </NFlex>
+              </div>
             </div>
             <div class="lw-kline-sidebar__section">
               <NText depth="3" style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 4px; padding: 2px 6px; background: rgba(16,185,129,0.08); border-radius: 4px; border-left: 3px solid #10b981; color: #059669">📊量价</NText>
-              <NFlex :size="4" wrap style="row-gap: 4px">
+              <div class="lw-kline-sidebar__group">
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showOBV ? 'primary' : 'default'" :secondary="!showOBV" @click="toggleOBV">OBV</NButton>
@@ -5845,11 +5926,11 @@ watch(showLongPosition, (newVal) => {
                   </template>
                   <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.weisWave }}</span>
                 </NTooltip>
-              </NFlex>
+              </div>
             </div>
             <div class="lw-kline-sidebar__section">
               <NText depth="3" style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 4px; padding: 2px 6px; background: rgba(139,92,246,0.08); border-radius: 4px; border-left: 3px solid #8b5cf6; color: #7c3aed">📏强度</NText>
-              <NFlex :size="4" wrap style="row-gap: 4px">
+              <div class="lw-kline-sidebar__group">
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showADX ? 'primary' : 'default'" :secondary="!showADX" @click="toggleADX">ADX</NButton>
@@ -5895,10 +5976,16 @@ watch(showLongPosition, (newVal) => {
                 >
                   筹码
                 </NButton>
-              </NFlex>
+              </div>
             </div>
           </NFlex>
         </div>
+        <button
+          type="button"
+          class="lw-kline-sidebar__toggle"
+          :title="sidebarCollapsed ? '展开指标栏' : '收起指标栏'"
+          @click="toggleSidebar"
+        >{{ sidebarCollapsed ? '›' : '‹' }}</button>
       </div>
       <div class="lw-kline-main">
         <NFlex :size="6" wrap style="row-gap: 4px; align-items: center">
@@ -5945,7 +6032,7 @@ watch(showLongPosition, (newVal) => {
             {{ it.label }}
           </NButton>
           <span style="width: 12px" />
-          <template v-if="DAILY_LIKE_KLT.has(activeKlt) && !isEtfCode.value">
+          <template v-if="DAILY_LIKE_KLT.has(activeKlt) && !isEtfCode.value && !isBinanceCode && !isBitgetCode">
             <NText depth="3" style="font-size: 12px; margin-right: 2px">复权</NText>
             <NButton
               v-for="opt in ADJUST_OPTIONS"
@@ -6260,20 +6347,6 @@ watch(showLongPosition, (newVal) => {
             />
           </div>
         </div>
-        <NFlex align="center" :size="8" class="lw-kline-hint-row">
-          <NText depth="3" class="lw-kline-hint-text">
-            {{
-              pollIntervalMs > 0
-                ? `每 ${Math.round(pollIntervalMs / 1000)} 秒刷新`
-                : '切换周期后加载'
-            }}
-            · 按住拖动查看左侧历史时会自动加载更早 K 线
-            <span v-if="activeDataSource" class="lw-kline-source-tag" :class="{ 'lw-kline-source-tag--fallback': activeDataSource !== 'eastmoney' && activeDataSource !== 'tdx-mac' && activeDataSource !== 'tdx-mac-ex' }">
-              {{ activeDataSource === 'eastmoney' ? '东方财富' : activeDataSource === 'tdx-mac' ? '通达信MAC' : activeDataSource === 'tdx-mac-ex' ? '通达信MAC扩展' : activeDataSource === 'sina' ? '新浪财经' : activeDataSource === 'tencent' ? '腾讯财经' : activeDataSource === 'tdx' ? '通达信' : activeDataSource }}
-            </span>
-          </NText>
-          <NSpin v-if="loading || loadingHistory" size="small" />
-        </NFlex>
       </div>
     </div>
   </div>
@@ -6308,19 +6381,84 @@ watch(showLongPosition, (newVal) => {
 }
 .lw-kline-sidebar {
   flex: 0 0 auto;
-  width: 140px;
-  min-width: 120px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* 一行放 4 个指标按钮所需的宽度；窄屏时按视口收缩 */
+  width: clamp(260px, 20vw, 340px);
+  min-width: 240px;
+  /* 靠 .lw-kline-body 的 stretch 与右侧 K 线区等高铺满 */
+  overflow: hidden;
+  transition: width 0.15s ease;
+}
+/* 收起后只留一条窄边，宽度让给 K 线 */
+.lw-kline-sidebar--collapsed {
+  width: 18px;
+  min-width: 18px;
 }
 .lw-kline--dark .lw-kline-sidebar {
   border-color: #3f3f46;
 }
 .lw-kline-sidebar__inner {
   min-width: 0;
-  position: sticky;
-  top: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  /* 指标放不下时自身滚动，不撑高页面 */
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+/* 收起/展开按钮：钉在指标栏右上角，不随指标列表滚动 */
+.lw-kline-sidebar__toggle {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 5;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  line-height: 1;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid #e2e8f0;
+  border-radius: 3px;
+  background: #ffffff;
+  color: #64748b;
+}
+.lw-kline-sidebar__toggle:hover {
+  color: #0ea5e9;
+  border-color: #0ea5e9;
+}
+.lw-kline--dark .lw-kline-sidebar__toggle {
+  background: #18181b;
+  border-color: #3f3f46;
+  color: #94a3b8;
+}
+.lw-kline--dark .lw-kline-sidebar__toggle:hover {
+  color: #38bdf8;
+  border-color: #38bdf8;
 }
 .lw-kline-sidebar__section {
   margin-bottom: 6px;
+}
+/* 指标按钮一行 4 个，行数减半便于整屏显示 */
+.lw-kline-sidebar .lw-kline-sidebar__group {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+.lw-kline-sidebar .lw-kline-sidebar__group > .n-button {
+  width: 100%;
+  min-width: 0;
+}
+/* 带附加开关的复合项（背离/买卖点/TEMA转折）占两列，否则会挤出格子 */
+.lw-kline-sidebar .lw-kline-sidebar__group > .n-flex {
+  grid-column: span 2;
+}
+/* 过长的英文指标名省略显示，悬停有完整说明 */
+.lw-kline-sidebar .lw-kline-sidebar__group :deep(.n-button__content) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .lw-kline-main {
   flex: 1 1 0;
@@ -6328,17 +6466,6 @@ watch(showLongPosition, (newVal) => {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-.lw-kline-hint-row {
-  min-width: 0;
-  max-width: 100%;
-}
-.lw-kline-hint-text {
-  font-size: 12px;
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow-wrap: anywhere;
-  word-break: break-word;
 }
 .lw-kline-toolbar-name {
   font-size: 14px;
@@ -6518,29 +6645,6 @@ watch(showLongPosition, (newVal) => {
   width: 100%;
   min-height: 0;
   display: block;
-}
-.lw-kline-source-tag {
-  display: inline-block;
-  font-size: 10px;
-  line-height: 1;
-  padding: 2px 5px;
-  border-radius: 3px;
-  background: #e0f2fe;
-  color: #0369a1;
-  vertical-align: middle;
-  margin-left: 4px;
-}
-.lw-kline--dark .lw-kline-source-tag {
-  background: #1e3a5f;
-  color: #7dd3fc;
-}
-.lw-kline-source-tag--fallback {
-  background: #fef3c7;
-  color: #b45309;
-}
-.lw-kline--dark .lw-kline-source-tag--fallback {
-  background: #422006;
-  color: #fbbf24;
 }
 .lw-kline-signal-summary {
   width: 100%;

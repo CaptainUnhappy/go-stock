@@ -438,18 +438,42 @@ func (a *App) CheckUpdate(flag int) {
 			// 裸二进制替换会破坏代码签名且在 App Translocation/DMG 场景必然失败
 			assetName = "go-stock-darwin-universal.zip"
 		} else if IsLinux() {
-			assetName = "go-stock-linux-amd64"
+			if IsArm64() {
+				assetName = "go-stock-linux-arm64"
+			} else {
+				assetName = "go-stock-linux-amd64"
+			}
 		}
 
+		assetFound := false
 		for _, asset := range releaseVersion.Assets {
 			if asset.Name == assetName {
 				downloadUrl = asset.BrowserDownloadUrl
+				assetFound = true
 				break
 			}
 		}
 
 		if downloadUrl == "" {
 			downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, assetName)
+		}
+
+		// 当前平台的安装包未包含在该 Release 中（如历史版本未发布 Linux 资产）时，
+			// 所有下载源必然 404，直接失败并引导手动下载，避免无谓的测速与重试。
+		// 赞助码用户可能配置了自定义 CDN 地址（winDownUrl 等），不在此拦截。
+		if !assetFound && sponsorCode == "" {
+			logger.SugaredLogger.Errorf("release %s 中未找到当前平台的安装包: %s", releaseVersion.TagName, assetName)
+			emitDone(true)
+			go runtime.EventsEmit(a.ctx, "updateDownloadFailed", map[string]any{
+				"downloadId": fmt.Sprintf("update-%d", time.Now().UnixNano()),
+				"version":    releaseVersion.TagName,
+				"error":      "该版本未发布当前平台的安装包，请前往发布页手动下载。",
+				"manualLinks": map[string]any{
+					"mirror":   "https://gh.927223.xyz/" + downloadUrl,
+					"original": downloadUrl,
+				},
+			})
+			return
 		}
 
 		originalDownloadUrl := downloadUrl
@@ -690,25 +714,31 @@ func (a *App) isVip(sponsorCode string, downloadUrl string, releaseVersion *mode
 			}
 		}
 		if IsMacOS() {
+			// 必须使用 .app bundle 的 zip 包（见 update_helper_darwin.go），
+			// 裸二进制 URL 会导致 ApplyMacUpdate 解压失败
 			if isVip {
 				if a.SponsorInfo["macDownUrl"] == nil {
-					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal", releaseVersion.TagName)
+					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal.zip", releaseVersion.TagName)
 				} else {
 					downloadUrl = convertor.ToString(a.SponsorInfo["macDownUrl"])
 				}
 			} else {
-				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal", releaseVersion.TagName)
+				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal.zip", releaseVersion.TagName)
 			}
 		}
 		if IsLinux() {
+			linuxAssetName := "go-stock-linux-amd64"
+			if IsArm64() {
+				linuxAssetName = "go-stock-linux-arm64"
+			}
 			if isVip {
 				if a.SponsorInfo["linuxDownUrl"] == nil {
-					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-linux-amd64", releaseVersion.TagName)
+					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, linuxAssetName)
 				} else {
 					downloadUrl = convertor.ToString(a.SponsorInfo["linuxDownUrl"])
 				}
 			} else {
-				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-linux-amd64", releaseVersion.TagName)
+				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, linuxAssetName)
 			}
 		}
 
@@ -2072,6 +2102,7 @@ func addStockFollowData(follow data.FollowedStock, stockData *data.StockInfo) {
 // shutdown is called at application termination
 func (a *App) shutdown(ctx context.Context) {
 	defer PanicHandler()
+	logger.SugaredLogger.Info("application shutdown 回调触发（正常退出）")
 	// 停止飞书应用机器人长连接
 	a.stopFeishuBotInternal()
 	// 记录当前窗口大小，供下次启动时还原
@@ -2954,6 +2985,102 @@ func (a *App) GetStockKLinePageWithFallback(stockCode, stockName string, klt str
 	}
 	end = strings.TrimSpace(end)
 	return data.FetchKLineWithFallback(stockCode, stockName, klt, limit, end, adjustFlag)
+}
+
+// ===== 币安 USDT-M 永续合约 =====
+
+// GetBinanceFuturesSymbols 获取全部币安 USDT-M 永续合约基础信息（品种列表）。
+func (a *App) GetBinanceFuturesSymbols() []data.BinanceSymbolInfo {
+	return data.BinanceSymbolList()
+}
+
+// GetBinanceFuturesTicker 获取永续合约 24h 行情；symbols 为英文逗号分隔的合约标识，为空时返回全部。
+func (a *App) GetBinanceFuturesTicker(symbols string) []data.BinanceTicker24h {
+	api := data.NewBinanceFuturesApi()
+	list := strings.TrimSpace(symbols)
+	if list == "" {
+		return api.GetAllTickers()
+	}
+	out := make([]data.BinanceTicker24h, 0)
+	for _, s := range strings.Split(list, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if t := api.GetTicker24h(s); t != nil {
+			out = append(out, *t)
+		}
+	}
+	return out
+}
+
+// GetBinanceFuturesPremium 获取全部合约的标记价与当期资金费率（榜单排序用）。
+func (a *App) GetBinanceFuturesPremium() []data.BinancePremiumIndex {
+	return data.NewBinanceFuturesApi().GetAllPremiumIndex()
+}
+
+// GetBinanceFuturesDerivatives 获取单个合约的永续衍生指标（资金费率/未平仓量/多空比 + 历史序列）。
+func (a *App) GetBinanceFuturesDerivatives(symbol, period string, limit int) *data.BinanceDerivativesBundle {
+	return data.NewBinanceFuturesApi().GetDerivatives(symbol, period, limit)
+}
+
+// GetBinanceFundingRateHistory 获取资金费率历史。
+func (a *App) GetBinanceFundingRateHistory(symbol string, limit int) []data.BinanceFundingRate {
+	return data.NewBinanceFuturesApi().GetFundingRateHistory(symbol, limit)
+}
+
+// GetBinanceOpenInterestHist 获取未平仓量历史序列。
+func (a *App) GetBinanceOpenInterestHist(symbol, period string, limit int) []data.BinanceOpenInterestHist {
+	return data.NewBinanceFuturesApi().GetOpenInterestHist(symbol, period, limit)
+}
+
+// GetBinanceLongShortRatio 获取多空比历史；ratioType 取 global（全局账户比）/ topPosition（大户持仓比）/ taker（主动买卖比）。
+func (a *App) GetBinanceLongShortRatio(symbol, period, ratioType string, limit int) []data.BinanceLongShortRatio {
+	api := data.NewBinanceFuturesApi()
+	switch ratioType {
+	case "topPosition", "top":
+		return api.GetTopLongShortPositionRatio(symbol, period, limit)
+	case "taker":
+		return api.GetTakerLongShortRatio(symbol, period, limit)
+	default:
+		return api.GetLongShortAccountRatio(symbol, period, limit)
+	}
+}
+
+// GetBitgetFuturesSymbols 获取全部 Bitget 美股永续合约基础信息（已过滤为非股票 RWA 之外的品种）。
+func (a *App) GetBitgetFuturesSymbols() []data.BitgetSymbolInfo {
+	return data.BitgetSymbolList()
+}
+
+// GetBitgetFuturesTicker 获取美股永续合约 24h 行情；symbols 为英文逗号分隔的合约标识，为空时返回全部。
+func (a *App) GetBitgetFuturesTicker(symbols string) []data.BitgetTicker {
+	api := data.NewBitgetFuturesApi()
+	list := strings.TrimSpace(symbols)
+	if list == "" {
+		return api.GetAllTickers()
+	}
+	out := make([]data.BitgetTicker, 0)
+	for _, s := range strings.Split(list, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if t := api.GetTicker(s); t != nil {
+			out = append(out, *t)
+		}
+	}
+	return out
+}
+
+// GetBitgetFuturesDerivatives 获取单个美股永续合约的衍生指标（资金费率/标记价基差/当前未平仓量）。
+// 注意：Bitget 美股永续不提供多空持仓比，且无 OI 历史端点，故只有当前值。
+func (a *App) GetBitgetFuturesDerivatives(symbol string) *data.BitgetDerivativesBundle {
+	return data.NewBitgetFuturesApi().GetDerivatives(symbol)
+}
+
+// GetBitgetFundingRateHistory 获取美股永续合约资金费率历史（按时间升序）。
+func (a *App) GetBitgetFundingRateHistory(symbol string, limit int) []data.BitgetFundingRate {
+	return data.NewBitgetFuturesApi().GetFundingRateHistory(symbol, limit)
 }
 
 // GetFuturesPositionTrend 获取股指期货（IF/IH/IC/IM）前20会员多空单持仓趋势，
@@ -4778,19 +4905,12 @@ const (
 	skillMdDisabledName = "SKILL.md.disabled"
 )
 
-// skillsDir 返回文件系统技能目录路径（与 agent.deepAgentRootDir 保持一致）。
+// skillsDir 返回文件系统技能目录路径（与 agent.RootDir 保持一致）。
 //
-// 使用可执行文件所在目录而非 os.Getwd()，确保无论从哪个工作目录启动 go-stock，
-// skills 目录都固定在程序所在目录下；可执行文件路径获取失败时降级到当前工作目录。
+// 统一走 agent.RootDir：Windows/Linux 即程序所在目录（与旧行为一致，老用户零变化），
+// macOS 双击 .app 时为应用支持目录，技能不再随 .app 覆盖安装被清除。
 func skillsDir() string {
-	if exePath, err := os.Executable(); err == nil && exePath != "" {
-		return filepath.Join(filepath.Dir(exePath), "skills")
-	}
-	wd, err := os.Getwd()
-	if err != nil || wd == "" {
-		wd = "."
-	}
-	return filepath.Join(wd, "skills")
+	return filepath.Join(agent.RootDir(), "skills")
 }
 
 // ImportSkillPackage

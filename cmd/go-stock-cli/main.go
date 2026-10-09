@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"go-stock/backend/appdata"
 	stockcli "go-stock/backend/cli"
@@ -28,17 +29,25 @@ func main() {
 	if err := applyStdinStockCodes(&req); err != nil {
 		log.Fatal(err)
 	}
-	if dbPath == "" {
-		dbPath = dbPathFromEnv()
+	if stockcli.NormalizeCommandPath(req.CommandPath) == "help" {
+		if err := printHelp(req); err != nil {
+			log.Fatal(err)
+		}
+		return
 	}
-	if dbPath == "" {
-		log.Fatal("resolve go-stock database path failed")
+	if commandNeedsRuntime(req.CommandPath) {
+		if dbPath == "" {
+			dbPath = dbPathFromEnv()
+		}
+		if dbPath == "" {
+			log.Fatal("resolve go-stock database path failed")
+		}
+		db.Init(dbPath)
+		if err := data.EnsureSettingsSchema(); err != nil {
+			log.Fatalf("migrate settings schema: %v", err)
+		}
+		data.InitAnalyzeSentiment()
 	}
-	db.Init(dbPath)
-	if err := data.EnsureSettingsSchema(); err != nil {
-		log.Fatalf("migrate settings schema: %v", err)
-	}
-	data.InitAnalyzeSentiment()
 
 	runner, err := stockcli.NewRunner()
 	if err != nil {
@@ -49,6 +58,39 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Println(out)
+}
+
+// commandNeedsRuntime keeps the static help tree independent from the database.
+// Tool discovery still initializes runtime state because the upstream tool constructors
+// derive part of their metadata from persisted settings.
+func commandNeedsRuntime(commandPath string) bool {
+	switch stockcli.NormalizeCommandPath(commandPath) {
+	case "", "help":
+		return false
+	default:
+		return true
+	}
+}
+
+func printHelp(req stockcli.Request) error {
+	output := stockcli.RenderHelp()
+	if !strings.EqualFold(strings.TrimSpace(req.Format), "json") {
+		fmt.Println(output)
+		return nil
+	}
+	payload := stockcli.Result{
+		CommandPath: "help",
+		Title:       "go-stock CLI 功能树",
+		ReadOnly:    true,
+		Output:      output,
+		GeneratedAt: time.Now().Format(time.RFC3339),
+	}
+	encoded, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(encoded))
+	return nil
 }
 
 func quietLogger() {

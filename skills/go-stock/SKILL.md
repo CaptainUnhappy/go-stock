@@ -28,6 +28,10 @@ description: Use when an agent needs to work with local go-stock financial data 
 .\go-stock-cli.exe --json index history --name 微盘股 --start 2025-01-01 --end 2026-08-10
 .\go-stock-cli.exe market industry-rank concept-money --sort netamount --limit 20
 .\go-stock-cli.exe market money-flow stock --sort r0_net --limit 20
+.\go-stock-cli.exe market contracts binance market --sort amount --limit 20
+.\go-stock-cli.exe market contracts binance kline --symbol BTCUSDT --interval day --limit 90
+.\go-stock-cli.exe market contracts bitget market --sort percent --limit 20
+.\go-stock-cli.exe market contracts bitget kline --symbol AAPL --interval day --limit 90
 .\go-stock-cli.exe kline show --stock-code 002335 --k-line-type day --adjust qfq --limit 120
 .\go-stock-cli.exe kline signals --stock-code 002335 --k-line-type day --adjust qfq --limit 250
 .\go-stock-cli.exe portfolio list
@@ -82,6 +86,7 @@ skills/go-stock/references/tool-catalog.md
 - 资金流按 GUI 对齐：个股资金 9 标签用 `market money-flow stock` 的 `sort` 参数；板块资金用 `market money-flow bk ...`；概念资金用 `market money-flow concept ...`。
 - 基金使用 `fund follow` 和 `fund ranking`；基金搜索、详情、K线、净值、持仓分别用 `fund search/info/kline/nav/holdings`。
 - 交易日历使用独立 `calendar` 一级菜单：当前时间用 `calendar now`，判断交易日用 `calendar is-trading-day --date YYYY-MM-DD`，下一交易日用 `calendar next-trading-day --date YYYY-MM-DD`，节假日用 `calendar holiday/holiday-year/holiday-batch`。
+- 合约行情使用 `market contracts`：加密永续选 `binance`，美股永续选 `bitget`；先用 `market` 看榜单，再按标的用 `kline` 和 `derivatives`。不要把 Bitget 单点未平仓量解释成历史 OI 趋势。
 - 用户明确要管理自选分组时，用 `portfolio group list/add/rename/assign/remove`；重命名分组用 `portfolio group rename --group-id <ID> --new-name <新名称>`。
 - 用户给持仓并要求 Agent 设置提醒时，使用 `portfolio position set`，先生成预览，用户二次确认后再带确认令牌写入。
 - 未显式传入 `sort` 时，新关注/新建持仓记录默认排序为 `99`；用户给当前持仓截图并要求更新持仓时，截图内持仓按持有成本排序，截图未出现但仍关注的标的保持默认 `99`。
@@ -139,6 +144,10 @@ skills/go-stock/references/tool-catalog.md
 | 看K线趋势 | `GetEastMoneyKLineWithMA` | K 线并带均线，输出列顺序稳定。 |
 | 看K线摘要 | `kline show` | K 线表后追加当前价相对 MA5/10/20/60、近 5/20 根涨幅和量能摘要，支持 `--adjust qfq|hfq|none`。 |
 | 看指标信号 | `kline signals` | 输出看多、看空、震荡、中性统计和 MA/MACD/RSI/KDJ/BOLL 等指标标签，支持 `--adjust qfq|hfq|none`。 |
+| 看币安永续 | `market contracts binance market/kline/derivatives` | 查询 USDT-M 永续行情榜、K 线、资金费率和未平仓量等衍生指标。 |
+| 看 Bitget 美股永续 | `market contracts bitget market/kline/derivatives` | 查询美股永续行情榜、K 线和当前衍生指标。 |
+| 看逐笔大单 | `GetTdxTickData` | 查询通达信逐笔成交统计与大单明细。 |
+| 看分时采样 | `GetTdxMinuteTrend` | 查询通达信分时走势采样。 |
 | 查最新财务 | `GetStockLatestFinance` | EPS、ROE、营收、净利润等核心指标。 |
 | 查估值位置 | `GetStockValuationPercentile` | PE 等估值历史分位。 |
 | 查研报 | `GetStockResearchReport` / `SearchReport` | 个股研报或全局研报搜索。 |
@@ -221,7 +230,7 @@ skills/go-stock/references/tool-catalog.md
 
 ## 安全边界
 
-不要调用或建议开放这些有副作用或已禁用的工具：`SetTradingPrice`, `SendDingDingMessage`, `SendToDingDing`, `CreateAiRecommendStocks`, `BatchCreateAiRecommendStocks`, `AiRecommendStocks`, `GetAIAnalysisHistory`, `GetAIAnalysisDetail`, `GetAIAnalysisContent`。
+不要调用或建议开放这些有副作用或已禁用的 raw 工具：价格提醒、钉钉/飞书通知、AI 推荐写入、自选/分组/概念标签写入、操作计划写入、提示词保存/删除、股票代码批量清理，以及 `GetAIAnalysisHistory`, `GetAIAnalysisDetail`, `GetAIAnalysisContent`。
 
 `portfolio position set` 是唯一受控写入例外；必须遵守“预览 -> 用户二次确认 -> 带确认令牌写入”的流程。
 

@@ -50,6 +50,8 @@ func RenderHelp() string {
 	b.WriteString(".\\go-stock-cli.exe --json index history --name 微盘股 --start 2025-01-01 --end 2026-08-10\n")
 	b.WriteString(".\\go-stock-cli.exe market industry-rank concept-money --sort netamount --limit 20\n")
 	b.WriteString(".\\go-stock-cli.exe market money-flow stock --sort r0_net --limit 20\n")
+	b.WriteString(".\\go-stock-cli.exe market contracts binance market --sort percent --limit 20\n")
+	b.WriteString(".\\go-stock-cli.exe market contracts bitget kline --symbol aapl --interval day --limit 90\n")
 	b.WriteString(".\\go-stock-cli.exe kline show --stock-code 002335 --k-line-type day --adjust qfq --limit 120\n")
 	b.WriteString(".\\go-stock-cli.exe kline signals --stock-code 002335 --k-line-type day --adjust qfq --limit 250\n")
 	b.WriteString(".\\go-stock-cli.exe portfolio list\n")
@@ -196,6 +198,18 @@ func marketTree() TreeNode {
 			{Label: "热门话题", Path: "market hot topic"},
 			{Label: "重大事件时间轴", Path: "market hot timeline"},
 			{Label: "财经日历", Path: "market hot calendar"},
+		}},
+		{Label: "合约行情", Children: []TreeNode{
+			{Label: "币安 USDT-M 永续", Children: []TreeNode{
+				{Label: "行情榜单", Path: "market contracts binance market"},
+				{Label: "K线", Path: "market contracts binance kline"},
+				{Label: "衍生指标", Path: "market contracts binance derivatives"},
+			}},
+			{Label: "Bitget 美股永续", Children: []TreeNode{
+				{Label: "行情榜单", Path: "market contracts bitget market"},
+				{Label: "K线", Path: "market contracts bitget kline"},
+				{Label: "衍生指标", Path: "market contracts bitget derivatives"},
+			}},
 		}},
 	}}
 }

@@ -99,6 +99,7 @@ import {useRoute, useRouter} from 'vue-router'
 import MoneyTrend from "./moneyTrend.vue";
 import StockSparkLine from "./stockSparkLine.vue";
 import StockLightweightKlineChart from "./StockLightweightKlineChart.vue";
+import { KLINE_MODAL_CONTENT_STYLE, KLINE_MODAL_STYLE, useKlineModalFit } from "./kline/useKlineModalFit";
 
 const route = useRoute()
 const router = useRouter()
@@ -116,9 +117,6 @@ const kLineChartRef = ref(null);
 const kLineChartRef2 = ref(null);
 
 
-const handleProgress = (progress) => {
-  //console.log(`Export progress: ${progress.ratio * 100}%`);
-};
 const enableEditor = ref(false)
 const mdPreviewRef = ref(null)
 const mdEditorRef = ref(null)
@@ -155,6 +153,9 @@ const fenshiImageFallback = ref(false)
 const modalShow7 = ref(false)
 const lwKlineCode = ref('')
 const lwKlineName = ref('')
+// 多周期 K 线弹窗：尺寸与图表高度自适应，与全站其他 K 线弹窗统一
+const klineWrapRef = ref(null)
+const { chartHeight: lwKlineChartHeight, attach: attachKlineFit, detach: detachKlineFit } = useKlineModalFit(klineWrapRef)
 // gotdx 分时明细弹窗状态
 const tdxMinuteBundle = ref(null)  // TdxMinuteTimeDataBundle
 const tdxMinuteBundleList = ref([]) // 多日模式：[{ dateStr, bundle }]
@@ -2842,6 +2843,10 @@ function showMoney(code, name) {
 function toEastMoneyCode(code) {
   if (!code) return ''
   const c = String(code).trim()
+  // 币安 USDT-M 永续合约（bn: 前缀）直通：非东财体系，保持原样交由行情组件/后端识别
+  if (/^bn:/i.test(c)) return 'bn:' + c.slice(3).toUpperCase()
+  // Bitget 美股永续合约（bt: 前缀）直通：非东财体系，保持原样交由行情组件/后端识别
+  if (/^bt:/i.test(c)) return 'bt:' + c.slice(3).toUpperCase()
   if (/\.(SH|SZ|BJ|HK|US|SS)$/i.test(c)) return c.toUpperCase()
   const lower = c.toLowerCase()
   if (lower.startsWith('sh')) return lower.slice(2) + '.SH'
@@ -2865,7 +2870,12 @@ function toEastMoneyCode(code) {
 /** 东方财富格式转回应用内部代码格式（如 000001.SZ → sh000001） */
 function fromEastMoneyCode(emCode) {
   if (!emCode) return ''
-  const c = String(emCode).trim().toUpperCase()
+  const raw = String(emCode).trim()
+  // 币安 USDT-M 永续合约（bn: 前缀）直通
+  if (/^bn:/i.test(raw)) return raw
+  // Bitget 美股永续合约（bt: 前缀）直通
+  if (/^bt:/i.test(raw)) return raw
+  const c = raw.toUpperCase()
   if (c.endsWith('.SH')) return 'sh' + c.slice(0, -3)
   if (c.endsWith('.SZ')) return 'sz' + c.slice(0, -3)
   if (c.endsWith('.BJ')) return 'bj' + c.slice(0, -3)
@@ -3674,6 +3684,15 @@ function searchStockReport(stockCode) {
   })
 }
 
+// 监听多周期 K 线模态框，驱动图表高度自适应
+watch(modalShow6, (newVal) => {
+  if (newVal) {
+    attachKlineFit()
+  } else {
+    detachKlineFit()
+  }
+})
+
 // 大单过滤切换后，同步分页 itemCount + 回到第 1 页
 watch([tdxAmountFilter, filteredTdxTransactionList], () => {
   tdxTransactionPagination.value.itemCount = filteredTdxTransactionList.value.length
@@ -4253,8 +4272,7 @@ watch([tdxAmountFilter, filteredTdxTransactionList], () => {
       <MdEditor v-if="enableEditor" :toolbars="toolbars" ref="mdEditorRef" style="height: 440px;max-height: 60vh;text-align: left"
                 :modelValue="data.airesult" :theme="theme">
         <template #defToolbars>
-          <ExportPDF :file-name="data.name+'['+data.code+']AI分析报告'" style="text-align: left"
-                     :modelValue="data.airesult" @onProgress="handleProgress"/>
+          <ExportPDF style="text-align: left" :modelValue="data.airesult"/>
         </template>
       </MdEditor>
       <div v-if="!enableEditor" ref="aiResultScrollRef" style="height: 440px;max-height: 60vh;text-align: left;overflow-y: auto;">
@@ -4331,31 +4349,27 @@ watch([tdxAmountFilter, filteredTdxTransactionList], () => {
     v-model:show="modalShow6"
     :title="(lwKlineName || '') + ' — 多周期K线'"
     preset="card"
-    style="width: min(1100px, 96vw); max-width: 96vw; box-sizing: border-box"
-    :content-style="{
-      maxHeight: 'min(85vh, 820px)',
-      overflowY: 'auto',
-      overflowX: 'hidden',
-      minWidth: 0,
-      boxSizing: 'border-box',
-    }"
+    :style="KLINE_MODAL_STYLE"
+    :content-style="KLINE_MODAL_CONTENT_STYLE"
   >
-    <stock-lightweight-kline-chart
-      v-if="modalShow6"
-      :key="'lightweight-' + lwKlineCode"
-      :code="lwKlineCode"
-      :stock-name="lwKlineName"
-      :dark-theme="data.darkTheme"
-      :chart-height="500"
-      :long-entry-price="currentStockTradingPrice.entryPrice"
-      :long-stop-loss-price="currentStockTradingPrice.stopLossPrice"
-      :long-take-profit-price="currentStockTradingPrice.takeProfitPrice"
-      :cost-price="currentStockTradingPrice.costPrice"
-      @update:longEntryPrice="handleLongEntryPriceUpdate"
-      @update:longStopLossPrice="handleLongStopLossPriceUpdate"
-      @update:longTakeProfitPrice="handleLongTakeProfitPriceUpdate"
-      @update:costPrice="handleCostPriceUpdate"
-    />
+    <div ref="klineWrapRef">
+      <stock-lightweight-kline-chart
+        v-if="modalShow6"
+        :key="'lightweight-' + lwKlineCode"
+        :code="lwKlineCode"
+        :stock-name="lwKlineName"
+        :dark-theme="data.darkTheme"
+        :chart-height="lwKlineChartHeight"
+        :long-entry-price="currentStockTradingPrice.entryPrice"
+        :long-stop-loss-price="currentStockTradingPrice.stopLossPrice"
+        :long-take-profit-price="currentStockTradingPrice.takeProfitPrice"
+        :cost-price="currentStockTradingPrice.costPrice"
+        @update:longEntryPrice="handleLongEntryPriceUpdate"
+        @update:longStopLossPrice="handleLongStopLossPriceUpdate"
+        @update:longTakeProfitPrice="handleLongTakeProfitPriceUpdate"
+        @update:costPrice="handleCostPriceUpdate"
+      />
+    </div>
   </n-modal>
 
   <!-- gotdx 分时图 + 分笔成交明细 -->

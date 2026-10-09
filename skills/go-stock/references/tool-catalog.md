@@ -38,7 +38,8 @@ Get-Content .\watchlist.txt | .\go-stock-cli.exe tool GetStockInfo --stock-code 
 ├─ market money-flow bk list/latest/date/trend
 ├─ market money-flow concept list/latest/date/trend
 ├─ market billboard/stock-report/announcement/industry-research
-└─ market hot global/cn/hk/us/topic/timeline/calendar
+├─ market hot global/cn/hk/us/topic/timeline/calendar
+└─ market contracts binance/bitget market/kline/derivatives
 
 指数数据
 └─ index history
@@ -87,6 +88,12 @@ K线分析
 .\go-stock-cli.exe market industry-rank csrc-money --sort netamount --limit 20
 .\go-stock-cli.exe market industry-rank concept-money --sort netamount --limit 20
 .\go-stock-cli.exe market money-flow stock --sort r0_net --limit 20
+.\go-stock-cli.exe market contracts binance market --sort amount --limit 20
+.\go-stock-cli.exe market contracts binance kline --symbol BTCUSDT --interval day --limit 90
+.\go-stock-cli.exe market contracts binance derivatives --symbol BTCUSDT
+.\go-stock-cli.exe market contracts bitget market --sort percent --limit 20
+.\go-stock-cli.exe market contracts bitget kline --symbol AAPL --interval day --limit 90
+.\go-stock-cli.exe market contracts bitget derivatives --symbol AAPL
 .\go-stock-cli.exe kline show --stock-code 002335 --k-line-type day --adjust qfq --limit 120
 .\go-stock-cli.exe kline signals --stock-code 002335 --k-line-type day --adjust qfq --limit 250
 .\go-stock-cli.exe calendar is-trading-day --date 2026-07-03
@@ -173,6 +180,17 @@ raw tool 参数和盯盘注意事项：
 | `GetIndustryValuation` | 查询行业估值数据。 | 判断行业估值高低、行业对比。 | 行业/板块名称。 |
 | `GetEconomicData` | 查询经济指标数据。 | 宏观数据、经济指标分析。 | 指标、日期范围。 |
 
+### 合约行情
+
+| 工具 | 作用 | 适合什么时候用 | 常见输入提示 |
+|---|---|---|---|
+| `GetBinanceFuturesMarket` | 查询币安 USDT-M 永续行情榜。 | 比较加密永续涨跌幅、成交额或资金费率。 | `sort`: `percent/amount/funding`；`limit`；`symbols`: 逗号分隔。 |
+| `GetBinanceFuturesKLine` | 查询币安 USDT-M 永续 K 线。 | 分析单个加密永续走势。 | `symbol`；`interval`；`limit`。 |
+| `GetBinanceFuturesDerivatives` | 查询币安永续资金费率、标记价、指数价和未平仓量等。 | 观察杠杆市场拥挤度和基差。 | `symbol`。 |
+| `GetBitgetFuturesMarket` | 查询 Bitget 美股永续行情榜。 | 比较美股永续涨跌幅、成交额或资金费率。 | `sort`: `percent/amount/funding`；`limit`；`symbols`。 |
+| `GetBitgetFuturesKLine` | 查询 Bitget 美股永续 K 线。 | 分析 AAPL、TSLA、NVDA 等美股永续走势。 | `symbol`；`interval`；`limit`。 |
+| `GetBitgetFuturesDerivatives` | 查询 Bitget 美股永续当前资金费率、标记价、指数价和未平仓量。 | 查看当前衍生指标；不代表历史 OI 趋势。 | `symbol`。 |
+
 ## 个股行情与 K 线
 
 | 工具 | 作用 | 适合什么时候用 | 常见输入提示 |
@@ -184,6 +202,7 @@ raw tool 参数和盯盘注意事项：
 | `GetEastMoneyKLineWithMA` | 查询带均线的 K 线，输出列顺序稳定，便于人读和程序解析。 | 做趋势、均线、技术面分析。 | 股票代码、周期、均线参数，如 `maPeriods: 5,10,20,60`；CLI 可用 `--adjust-flag qfq|hfq|none`。若需要自动摘要，优先用 `kline show`。 |
 | `kline signals` | CLI 子功能，按 K 线数据计算 GUI “指标信号汇总”口径的看多、看空、震荡、中性统计和逐指标标签。 | 用户问 K线分析页里的“看多/看空/震荡/中性”信号，或 Agent 需要快速判断技术指标共振。 | `--stock-code`: 股票代码；`--k-line-type`: 周期；`--adjust`: qfq/hfq/none；`--limit`: 默认建议 250。 |
 | `GetStockMinuteData` | 查询个股分时/分钟数据。 | 盘中走势、短周期波动。 | 股票代码、日期、分钟周期。 |
+| `GetTdxMinuteTrend` | 查询通达信分时走势采样。 | 需要指定交易日的分时价格、均价和成交采样。 | `stockCode`、`tradeDate`、`points`；CLI 推荐 kebab 参数名。 |
 | `GetStockConceptInfo` | 查询个股所属概念/板块；东方财富概念无数据时会尝试通达信 MAC 板块归属兜底。 | 分析个股题材、板块归属。 | 股票代码；CLI 归档层遇到多只代码会逐只查询并分段输出。 |
 
 ## 个股基本面、F10、财务、估值
@@ -253,6 +272,7 @@ raw tool 参数和盯盘注意事项：
 | `GetIndustryMoneyRank` | 查询“行业排名”里的资金类子页：行业资金排名、证监会行业资金排名、概念板块资金排名。 | 判断资金流向哪些行业分类、证监会行业或概念；不要把它当作顶层“板块资金流向”。 | `fenlei`: `0` 行业资金排名、`2` 证监会行业资金排名、`1` 概念板块资金排名、`3` 地域板块资金排名；`sort`: `netamount`, `netbuy`, `change`。CLI 命令已映射：`money=0`, `csrc-money=2`, `concept-money=1`。 |
 | `GetMutualTop10Deal` | 查询沪股通/深股通/港股通十大成交。 | 分析北向/南向资金偏好。 | 通道类型、交易日期。 |
 | `GetLongTigerList` | 查询市场龙虎榜。 | 找当天龙虎榜上榜股票。 | 日期、分页。 |
+| `GetTdxTickData` | 查询通达信逐笔成交统计与大单明细。 | 盘后分析主动买卖、大单成交和逐笔结构。 | `stockCode`、`tradeDate`、`topN`；CLI 推荐 kebab 参数名。 |
 
 ## 新闻、研报、公告、互动
 
@@ -353,11 +373,17 @@ raw tool 参数和盯盘注意事项：
 | `SetTradingPrice` | 设置交易价格/预警，有写入副作用。 |
 | `SendDingDingMessage` | 发送钉钉消息，有外部通知副作用。 |
 | `SendToDingDing` | 发送钉钉消息，有外部通知副作用。 |
+| `SendFeishuMessage` / `SendToFeishu` | 发送飞书消息，有外部通知副作用。 |
 | `CreateAiRecommendStocks` | 创建 AI 推荐记录，有写入副作用。 |
 | `BatchCreateAiRecommendStocks` | 批量创建 AI 推荐记录，有写入副作用。 |
 | `AiRecommendStocks` | AI 推荐记录工具不使用。 |
 | `GetAIAnalysisHistory` | AI 分析历史工具不使用。 |
 | `GetAIAnalysisDetail` | AI 分析详情工具不使用。 |
 | `GetAIAnalysisContent` | AI 分析正文工具不使用。 |
+| `FollowStock` / `CleanupStockCodes` | 会关注股票或批量改写本地代码；不提供 raw tool 直连。 |
+| `AddDailyOperationPlan` / `UpdateDailyOperationPlan*` | 会创建或修改本地操作计划；不提供 raw tool 直连。 |
+| `Create/Update/DeleteStockGroup` / `Add/Remove/BatchMove/ReorganizeStockGroup*` | 会修改本地自选分组；不提供 raw tool 直连。 |
+| `Create/Update/DeleteStockConcept` / `Add/Remove/BatchAdd/MergeStockConcept*` | 会修改本地概念标签；不提供 raw tool 直连。 |
+| `SavePromptTemplate` / `DeletePromptTemplate` | 会修改本地提示词模板；不提供 raw tool 直连。 |
 | `ListMCPServers` / `CreateMCPServer` / `UpdateMCPServer` / `DeleteMCPServer` / `EnableMCPServer` / `TestMCPServer` | 内部 MCP 服务配置管理，不是财经数据工具。 |
 | `ListSkills` / `CreateSkill` / `UpdateSkill` / `DeleteSkill` / `EnableSkill` | 内部 Skill 配置管理，不是财经数据工具。 |

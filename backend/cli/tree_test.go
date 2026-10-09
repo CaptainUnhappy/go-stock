@@ -174,6 +174,12 @@ func TestRunnerRegistersExecutableCommands(t *testing.T) {
 		"market money-flow stock",
 		"market money-flow bk latest",
 		"market money-flow concept latest",
+		"market contracts binance market",
+		"market contracts binance kline",
+		"market contracts binance derivatives",
+		"market contracts bitget market",
+		"market contracts bitget kline",
+		"market contracts bitget derivatives",
 		"portfolio list",
 		"portfolio position set",
 		"portfolio group rename",
@@ -191,6 +197,22 @@ func TestRunnerRegistersExecutableCommands(t *testing.T) {
 	} {
 		if !paths[required] {
 			t.Fatalf("runner missing executable command %q", required)
+		}
+	}
+}
+
+func TestUpstreamContractToolsAreAvailableThroughCLI(t *testing.T) {
+	entries := buildToolEntries()
+	for _, name := range []string{
+		"GetBinanceFuturesMarket",
+		"GetBinanceFuturesKLine",
+		"GetBinanceFuturesDerivatives",
+		"GetBitgetFuturesMarket",
+		"GetBitgetFuturesKLine",
+		"GetBitgetFuturesDerivatives",
+	} {
+		if _, ok := entries[name]; !ok {
+			t.Fatalf("upstream contract tool %q is not registered in CLI", name)
 		}
 	}
 }
@@ -346,6 +368,25 @@ func TestRunnerRegistersAllAllowedRawMCPTools(t *testing.T) {
 		}
 		if !paths[path] {
 			t.Fatalf("raw MCP tool %q was not migrated to CLI path %q", name, path)
+		}
+	}
+}
+
+func TestRawWriteToolsStayBlocked(t *testing.T) {
+	for _, name := range []string{
+		"SetTradingPrice", "SendDingDingMessage", "SendToDingDing",
+		"SendFeishuMessage", "SendToFeishu",
+		"CreateAiRecommendStocks", "BatchCreateAiRecommendStocks", "AiRecommendStocks",
+		"SetFollowedStockPosition", "FollowStock", "CleanupStockCodes",
+		"AddDailyOperationPlan", "UpdateDailyOperationPlan", "UpdateDailyOperationPlanStatus",
+		"CreateStockGroup", "UpdateStockGroup", "DeleteStockGroup",
+		"AddStockToGroup", "RemoveStockFromGroup", "BatchMoveStocksToGroup", "ReorganizeStockGroups",
+		"CreateStockConcept", "UpdateStockConcept", "DeleteStockConcept",
+		"AddStockToConcept", "RemoveStockFromConcept", "BatchAddStocksToConcept", "MergeStockConcepts",
+		"SavePromptTemplate", "DeletePromptTemplate",
+	} {
+		if !isBlockedRawTool(name) {
+			t.Fatalf("write-capable raw tool %q must stay blocked", name)
 		}
 	}
 }

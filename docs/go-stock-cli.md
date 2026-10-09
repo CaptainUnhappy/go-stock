@@ -64,6 +64,12 @@ stdin 提取规则支持 `sz002335`、`sh603690`、`bj430047`、`002335.SZ` 和�
 .\go-stock-cli.exe --json index history --name 微盘股 --start 2025-01-01 --end 2026-08-10
 .\go-stock-cli.exe market industry-rank concept-money --sort netamount --limit 20
 .\go-stock-cli.exe market money-flow stock --sort r0_net --limit 20
+.\go-stock-cli.exe market contracts binance market --sort amount --limit 20
+.\go-stock-cli.exe market contracts binance kline --symbol BTCUSDT --interval day --limit 90
+.\go-stock-cli.exe market contracts binance derivatives --symbol BTCUSDT
+.\go-stock-cli.exe market contracts bitget market --sort percent --limit 20
+.\go-stock-cli.exe market contracts bitget kline --symbol AAPL --interval day --limit 90
+.\go-stock-cli.exe market contracts bitget derivatives --symbol AAPL
 .\go-stock-cli.exe portfolio list
 .\go-stock-cli.exe portfolio group rename --group-id 1 --new-name 短线观察
 .\go-stock-cli.exe portfolio position set --stock-code 600237 --cost-price 12.56 --volume 300
@@ -86,6 +92,8 @@ stdin 提取规则支持 `sz002335`、`sh603690`、`bj430047`、`002335.SZ` 和�
 JSON 模式保留原有 `output`，同时新增 `data`，其中 `data.bars` 提供数值型 `date/open/high/low/close/volume/amount/partial`。只有显式 `883418.TI` 或名称“微盘股”按同花顺指数处理；裸 `883418` 仍按北交所代码解析。股票自选、持仓、分组命令明确拒绝 `.TI`。
 
 `calendar` 是独立交易日历入口：`calendar now` 查当前时间，`calendar is-trading-day --date YYYY-MM-DD` 判断 A 股交易日，`calendar next-trading-day --date YYYY-MM-DD` 查下一交易日，`calendar holiday/year/batch` 查节假日。
+
+`market contracts` 是合约行情入口。`binance` 查询币安 USDT-M 永续，`bitget` 查询 Bitget 美股永续；两者都提供 `market` 行情榜、`kline` K 线和 `derivatives` 资金费率/标记价/指数价/未平仓量。行情榜常用 `--sort percent|amount|funding --limit N`，K 线使用 `--symbol`、`--interval`、`--limit`。Bitget 美股永续没有多空账户比和未平仓量历史时序，不应把单点衍生指标描述成历史趋势。
 
 ## 归档工具层
 
@@ -126,6 +134,7 @@ AI 分析/AI 推荐工具不作为 CLI 数据能力使用。`research ai-report`
 - `kline signals` 会输出 GUI K线分析页“指标信号汇总”口径的看多、看空、震荡、中性统计和逐指标标签，同样支持 `--adjust qfq|hfq|none`。
 - `market hot cn/hk/us/global` 返回热门股票榜，对应 `GetHotStockList` 的沪深/港股/美股/全球市场类型；不要用 `market major-index` 或 `GetMarketData` 替代热门股。
 - `GetStockLatestFinance` 等单股语义工具遇到多股票输入时，CLI 会逐只拆分调用并分段输出。
+- `GetTdxTickData` 查询逐笔成交统计和大单明细，常用 `--stock-code`、`--trade-date`、`--top-n`；`GetTdxMinuteTrend` 查询分时走势采样，常用 `--stock-code`、`--trade-date`、`--points`。
 - 15:00 收盘后盘口仍可能返回最近快照，只能按收盘附近快照理解，不代表仍可成交。
 
 ## 写入边界
@@ -164,3 +173,7 @@ AI 分析/AI 推荐工具不作为 CLI 数据能力使用。`research ai-report`
 - `GetAIAnalysisDetail`
 - `GetAIAnalysisContent`
 - `SetFollowedStockPosition`，已迁移到 `portfolio position set`
+- 飞书通知工具：`SendFeishuMessage`、`SendToFeishu`
+- 自选、分组、概念标签的 raw 写工具：`FollowStock`、`Create/Update/DeleteStockGroup`、`Add/Remove/BatchMove/ReorganizeStockGroup*`、`Create/Update/DeleteStockConcept`、`Add/Remove/BatchAdd/MergeStockConcept*`
+- 操作计划与提示词写工具：`Add/UpdateDailyOperationPlan*`、`SavePromptTemplate`、`DeletePromptTemplate`
+- 批量清理工具：`CleanupStockCodes`

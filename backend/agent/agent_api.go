@@ -24,19 +24,40 @@ import (
 	"github.com/samber/lo"
 )
 
+// defaultStockPersonaPrompt 未选择提示词模板时的默认人设。
+const defaultStockPersonaPrompt = `你现在扮演一位拥有20年实战经验的顶级股票投资大师，精通价值投资、趋势交易、量化分析等多种策略。你擅长结合宏观经济、行业周期和企业基本面进行全方位、精准的多维分析，尤其对A股、港股、美股市场有深刻理解，始终秉持"风险控制第一"的原则，善于用通俗易懂的方式传授投资智慧。`
+
 type StockAiAgent struct {
 	instance     *Instance
 	sessionID    string
 	aiConfigId   int
 	question     string
 	thinkingMode bool
+	// sysPromptHint 系统提示词中「用户/技能/模板配置」部分的文本，用于 MCP 工具注入
+	// 判定。降级重建 React Agent（createFallbackReactAgent）时需要复用同一份线索。
+	sysPromptHint string
+}
+
+// mcpPromptHint 取系统提示词中由「用户/技能/模板配置」决定的文本，作为 MCP 工具注入线索。
+//
+// 只取这三处，**不含** ChatWithContext 后续追加的静态规则、自进化记忆、项目指令、
+// 会话上下文：那些片段依赖 instance.Mode / 环境文件 / 向量库，在 Agent 构建时（工具
+// 清单定档前）尚不可得；且属于运行时噪声而非用户表达的业务意图，参与匹配只会放大误召。
+func mcpPromptHint(sysPromptOverride string, sysPromptId *int) string {
+	if strings.TrimSpace(sysPromptOverride) != "" {
+		return sysPromptOverride
+	}
+	if sysPromptId == nil || *sysPromptId == 0 {
+		return defaultStockPersonaPrompt
+	}
+	return getCachedPromptTemplate(*sysPromptId)
 }
 
 func NewStockAiAgentApi() *StockAiAgent {
 	return &StockAiAgent{}
 }
 
-func (receiver StockAiAgent) newStockAiAgent(ctx *context.Context, aiConfigId int, thinkingMode bool, question string, agentMode string) (agent *StockAiAgent, err error) {
+func (receiver StockAiAgent) newStockAiAgent(ctx *context.Context, aiConfigId int, thinkingMode bool, question string, agentMode string, sysPromptHint string) (agent *StockAiAgent, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			logger.SugaredLogger.Errorf("panic in newStockAiAgent: %v", r)
@@ -65,7 +86,7 @@ func (receiver StockAiAgent) newStockAiAgent(ctx *context.Context, aiConfigId in
 	// sessionIDOverride（如飞书机器人按 chat+user 区分）仍可在 ChatWithContext 中覆盖。
 	sessionID := "default"
 
-	agentInstance, gErr := GetStockAiAgent(ctx, *aiConfig, question, agentMode)
+	agentInstance, gErr := GetStockAiAgent(ctx, *aiConfig, question, agentMode, sysPromptHint)
 	if gErr != nil {
 		return nil, gErr
 	}
@@ -74,16 +95,60 @@ func (receiver StockAiAgent) newStockAiAgent(ctx *context.Context, aiConfigId in
 	}
 
 	return &StockAiAgent{
-		instance:     agentInstance,
-		sessionID:    sessionID,
-		aiConfigId:   aiConfigId,
-		question:     question,
-		thinkingMode: thinkingMode,
+		instance:      agentInstance,
+		sessionID:     sessionID,
+		aiConfigId:    aiConfigId,
+		question:      question,
+		thinkingMode:  thinkingMode,
+		sysPromptHint: sysPromptHint,
 	}, nil
 }
 
+// ChatRequest 以具名字段描述一次 Agent 对话的完整输入。
+//
+// 替代原先 9 个位置参数 + optsOverride 变长参数的位序传参方式——位序错位曾导致
+// 真实 bug（imagesJSON 被读作 skillQuestionBlock 拼进用户消息文本），具名字段从
+// 类型层面杜绝此类问题。
+type ChatRequest struct {
+	Question   string // 用户问题（原始文本，技能激活块经 SkillQuestionBlock 注入）
+	AIConfigID int    // AI 服务配置 ID
+	// SysPromptID：提示词模板 ID；nil 或指向 0 时使用 SysPromptOverride/内置默认提示词
+	SysPromptID  *int
+	MemoryMode   bool   // 是否加载/保存聊天历史
+	MemoryCount  int    // 加载最近 N 轮对话（MemoryMode=true 时生效）
+	ThinkingMode bool   // 思考模式：引导模型分步推理
+	AgentMode    string // Agent 模式：""=自动判断, react/plan_execute/deepagents
+	// SysPromptOverride：直接覆盖系统提示词（优先于 SysPromptID），如技能全文、KB 问答提示词
+	SysPromptOverride string
+	// SessionIDOverride：会话 ID 覆盖（如飞书机器人按 chat+user 区分），为空用默认会话
+	SessionIDOverride string
+	// ResumeContextOverride：断点恢复上下文（追加到系统提示词末尾），见 agent_resume.go
+	ResumeContextOverride string
+	// SkillQuestionBlock：技能激活块（拼接到用户消息前，经 task 委派描述触达子 Agent）
+	SkillQuestionBlock string
+	// ImagesJSON：当前提问携带的图片列表 JSON，元素为 http(s) 图片外链或
+	// base64 data URL，仅视觉模型（AI 配置开启 SupportVision）生效
+	ImagesJSON string
+	// SkillDirName：用户显式选择的文件系统技能目录名（逗号分隔）。
+	// 经 AgentMeta 注入推荐工具（CreateAiRecommendStocks 等），使推荐记录快照技能 ID，
+	// 供按技能维度的回测统计；未选技能时为空。
+	SkillDirName string
+	// IsPromptBacktest：显式标记本次调用为提示词回测场景。
+	// 为 true 时：不注入推荐保存规则、不做回复自动保存（回测选股走
+	// prompt_backtest_picks 独立链路，避免模拟历史选股污染真实推荐记录）。
+	// 用显式字段替代历史遗留的"按标记字符串启发式识别"（isPromptBacktestCall），
+	// 后者可被用户提问中粘贴的标记文本伪造。
+	IsPromptBacktest bool
+}
+
 func (receiver StockAiAgent) Chat(question string, aiConfigId int, sysPromptId *int) chan *schema.Message {
-	return receiver.ChatWithContext(context.Background(), question, aiConfigId, sysPromptId, true, 20, false, "")
+	return receiver.ChatWithContext(context.Background(), ChatRequest{
+		Question:    question,
+		AIConfigID:  aiConfigId,
+		SysPromptID: sysPromptId,
+		MemoryMode:  true,
+		MemoryCount: 20,
+	})
 }
 
 // archiveAnalysisReport 将 AI 分析结果按日期归档到程序所在目录的 memory 目录。
@@ -144,7 +209,7 @@ func sanitizeReportFilename(s string, maxLen int) string {
 	return s
 }
 
-func (receiver StockAiAgent) ChatWithContext(ctx context.Context, question string, aiConfigId int, sysPromptId *int, memoryMode bool, memoryCount int, thinkingMode bool, agentMode string, optsOverride ...string) chan *schema.Message {
+func (receiver StockAiAgent) ChatWithContext(ctx context.Context, req ChatRequest) chan *schema.Message {
 	ch := make(chan *schema.Message, 1024)
 
 	go func() {
@@ -159,37 +224,24 @@ func (receiver StockAiAgent) ChatWithContext(ctx context.Context, question strin
 			}
 		}()
 
-		var sessionIDOverride string
-		var sysPromptOverride string
-		var resumeContextOverride string
-		var skillQuestionBlock string
-		var imagesJSON string
-		if len(optsOverride) > 0 && optsOverride[0] != "" {
-			sysPromptOverride = optsOverride[0]
-		}
-		if len(optsOverride) > 1 && optsOverride[1] != "" {
-			sessionIDOverride = optsOverride[1]
-		}
-		if len(optsOverride) > 2 && optsOverride[2] != "" {
-			resumeContextOverride = optsOverride[2]
-		}
-		if len(optsOverride) > 3 && optsOverride[3] != "" {
-			skillQuestionBlock = optsOverride[3]
-		}
-		// imagesJSON（optsOverride[4]）：当前提问携带的图片列表 JSON，
-		// 元素为 http(s) 图片外链或 base64 data URL，仅视觉模型生效。
-		if len(optsOverride) > 4 && optsOverride[4] != "" {
-			imagesJSON = optsOverride[4]
-		}
-		// skillDirName（optsOverride[5]）：用户显式选择的文件系统技能目录名（逗号分隔）。
-		// 经 AgentMeta 注入推荐工具（CreateAiRecommendStocks 等），使推荐记录快照技能 ID，
-		// 供按技能维度的回测统计；未选技能时为空。
-		var skillDirName string
-		if len(optsOverride) > 5 {
-			skillDirName = strings.TrimSpace(optsOverride[5])
-		}
+		question := req.Question
+		aiConfigId := req.AIConfigID
+		sysPromptId := req.SysPromptID
+		memoryMode := req.MemoryMode
+		memoryCount := req.MemoryCount
+		thinkingMode := req.ThinkingMode
+		agentMode := req.AgentMode
+		sysPromptOverride := req.SysPromptOverride
+		sessionIDOverride := req.SessionIDOverride
+		resumeContextOverride := req.ResumeContextOverride
+		skillQuestionBlock := req.SkillQuestionBlock
+		imagesJSON := req.ImagesJSON
+		skillDirName := strings.TrimSpace(req.SkillDirName)
 
-		stockAiAgent, agentErr := receiver.newStockAiAgent(&ctx, aiConfigId, thinkingMode, question, agentMode)
+		// 提示词线索必须在 Agent 构建前算好（工具清单在此定档），且只取配置侧文本：
+		// 完整 sysPrompt 的组装在后面，含依赖 instance.Mode 的运行时片段，无法整体提前。
+		sysPromptHint := mcpPromptHint(sysPromptOverride, sysPromptId)
+		stockAiAgent, agentErr := receiver.newStockAiAgent(&ctx, aiConfigId, thinkingMode, question, agentMode, sysPromptHint)
 		if agentErr != nil || stockAiAgent == nil {
 			// 直接透传错误原因，避免固定文案掩盖真实问题（如正则 panic、配置缺失、模型创建失败等）。
 			// newStockAiAgent 已通过 defer recover 把 panic 转为 error，此处不会再次 panic。
@@ -223,13 +275,18 @@ func (receiver StockAiAgent) ChatWithContext(ctx context.Context, question strin
 		}
 
 		sysPrompt := ""
+		metaSysPromptVersion := 0
 		if sysPromptOverride != "" {
 			sysPrompt = sysPromptOverride
 		} else if sysPromptId == nil || *sysPromptId == 0 {
-			sysPrompt = `你现在扮演一位拥有20年实战经验的顶级股票投资大师，精通价值投资、趋势交易、量化分析等多种策略。你擅长结合宏观经济、行业周期和企业基本面进行全方位、精准的多维分析，尤其对A股、港股、美股市场有深刻理解，始终秉持"风险控制第一"的原则，善于用通俗易懂的方式传授投资智慧。`
+			sysPrompt = defaultStockPersonaPrompt
 		} else {
-			sysPrompt = getCachedPromptTemplate(*sysPromptId) // 走 5 分钟 TTL 缓存，详见 sysprompt_cache.go
+			// 走 5 分钟 TTL 缓存，同时取回模板版本号用于推荐/回测归因，详见 sysprompt_cache.go
+			sysPrompt, metaSysPromptVersion = getCachedPromptTemplateWithVersion(*sysPromptId)
 		}
+		// strategyPrompt 仅取"策略提示词"部分（模板内容/override/默认人格），用于计算 PromptHash 归因；
+		// 不含随后拼接的静态规则与时间上下文，避免哈希随日期/时间漂移。
+		strategyPrompt := sysPrompt
 
 		// 静态规则段（强制规则 + 合规边界）— 进程级缓存，详见 sysprompt_cache.go
 		sysPrompt += staticRulesHead
@@ -251,8 +308,11 @@ func (receiver StockAiAgent) ChatWithContext(ctx context.Context, question strin
 		sysPrompt += staticRulesParallel
 		sysPrompt += staticRulesRetrieval
 
-		// 推荐记录保存规则（默认开启）：提示词回测调用跳过，见 isPromptBacktestCall 注释
-		if !isPromptBacktestCall(question, sysPrompt) {
+		// 推荐记录保存规则（默认开启）：提示词回测调用跳过。
+		// 优先取显式标记 req.IsPromptBacktest（不可伪造）；字符串启发式匹配仅作
+		// 兼容旧调用方的兜底，见 isPromptBacktestCall 注释。
+		isBacktest := req.IsPromptBacktest || isPromptBacktestCall(question, sysPrompt)
+		if !isBacktest {
 			sysPrompt += staticRulesRecommendSave
 		}
 
@@ -385,8 +445,10 @@ func (receiver StockAiAgent) ChatWithContext(ctx context.Context, question strin
 		// 注入实际模型名与系统/用户提示词，供推荐工具（CreateAiRecommendStocks 等）在
 		// InvokableRun 中提取，确保保存的推荐记录关联真实的模型与提示词，而非 AI 自填值。
 		actualModelName := ""
+		actualConfigName := ""
 		if aiConfig != nil {
 			actualModelName = aiConfig.ModelName
+			actualConfigName = aiConfig.Name
 		}
 		// 快照提示词模板 ID：直接取 sysPromptId 参数（复盘/盘前策略等 override 场景下
 		// 调用方同样把模板 ID 作为 sysPromptId 传入）；内置默认提示词为 0。
@@ -395,11 +457,15 @@ func (receiver StockAiAgent) ChatWithContext(ctx context.Context, question strin
 			metaSysPromptId = *sysPromptId
 		}
 		ctx = tools.WithAgentMeta(ctx, tools.AgentMeta{
-			ModelName:    actualModelName,
-			SystemPrompt: sysPrompt,
-			UserPrompt:   question,
-			SysPromptId:  metaSysPromptId,
-			SkillId:      skillDirName,
+			ModelName:        actualModelName,
+			ConfigName:       actualConfigName,
+			SystemPrompt:     sysPrompt,
+			UserPrompt:       question,
+			SysPromptId:      metaSysPromptId,
+			SysPromptVersion: metaSysPromptVersion,
+			SysPromptHash:    data.ShortPromptHash(strategyPrompt),
+			SkillId:          skillDirName,
+			IsPromptBacktest: isBacktest,
 		})
 		// 注入前端进度反馈 channel：工具调用前后通过 ReasoningContent 发送预告与结果摘要
 		ctx = WithProgressChannel(ctx, ch)
@@ -1017,7 +1083,7 @@ func createFallbackReactAgent(ctx context.Context, stockAiAgent *StockAiAgent, t
 	if question == "" {
 		question = "继续分析"
 	}
-	allTools := getToolsByQuestion(question, false)
+	allTools := getToolsByQuestion(question, mcpInjectContextFor(question, stockAiAgent.sysPromptHint), false)
 	instance, instErr := createReactAgent(ctx, toolableChatModel, allTools, cfg)
 	if instErr != nil || instance == nil || instance.ReactAgent == nil {
 		logger.SugaredLogger.Errorf("createFallbackReactAgent: createReactAgent failed: %v", instErr)

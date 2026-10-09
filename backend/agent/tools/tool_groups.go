@@ -17,6 +17,7 @@ const (
 	GroupNewsResearch  ToolGroup = "news_research"
 	GroupAIAnalysis    ToolGroup = "ai_analysis"
 	GroupOperations    ToolGroup = "operations"
+	GroupCrypto        ToolGroup = "crypto"
 )
 
 var toolGroupMap = map[string]ToolGroup{
@@ -160,6 +161,7 @@ var toolGroupMap = map[string]ToolGroup{
 	"GetBkFundFlowRank":          GroupMoneyFlow,
 	"GetBkConstituentStocks":     GroupMoneyFlow,
 	"GetFuturesPosition":         GroupMoneyFlow,
+	"GetTdxTickData":             GroupMoneyFlow,
 
 	"QueryStockNewsTool":          GroupNewsResearch,
 	"GetNewsListData":             GroupNewsResearch,
@@ -184,6 +186,25 @@ var toolGroupMap = map[string]ToolGroup{
 	"GetWallstreetcnMarketReal": GroupMarket,
 	"GetWallstreetcnKline":      GroupMarket,
 	"GetWallstreetcnCalendar":   GroupNewsResearch,
+
+	// 通达信 ICFQS：龙虎榜/游资席位（与 GetLongTigerList 同组）
+	"GetStockLHBDetail":      GroupNewsResearch,
+	"GetYYBLHBDetail":        GroupNewsResearch,
+	"GetActiveCapitalDetail": GroupNewsResearch,
+
+	// 通达信 ICFQS：主题投资与轮动
+	"GetTopicRotation": GroupMarket,
+	"GetHotTopics":     GroupMarket,
+	"GetTopTopics":     GroupMarket,
+	"GetTopicStocks":   GroupMarket,
+	"GetTopicKLine":    GroupMarket,
+
+	// 通达信 MAC：板块/成分/异动/盘口摘要与分时
+	"GetMACBoardList":     GroupMarket,
+	"GetMACBoardMembers":  GroupMarket,
+	"GetMACMarketMonitor": GroupMarket,
+	"GetMACSymbolInfo":    GroupMarket,
+	"GetTdxMinuteTrend":   GroupMarket,
 
 	"AiRecommendStocks":    GroupAIAnalysis,
 	"GetAIAnalysisHistory": GroupAIAnalysis,
@@ -223,10 +244,47 @@ var toolGroupMap = map[string]ToolGroup{
 
 	"MarkdownToImage": GroupOperations,
 
+	// 基金数据（净值/持仓/K线）：与 SearchFund/GetFundInfo 同组，
+	// operations 已有关键词「基金/基金代码/基金名称/净值」可触达。
+	"GetFundHistoryNetValue": GroupOperations,
+	"GetFundKLine":           GroupOperations,
+	"GetFundTop10Holdings":   GroupOperations,
+
+	// 通达信 ICFQS：公司资料/财务/归属板块/除权除息与标准财务工具同类，
+	// 归入基本面组；关键词已补「公司资料/所属板块/除权/除息/分红/送转」。
+	"GetTdxCompanyCategory":   GroupStockAnalysis,
+	"GetTdxCompanyInfo":       GroupStockAnalysis,
+	"GetTdxFinanceInfo":       GroupStockAnalysis,
+	"GetTdxSymbolBelongBoard": GroupStockAnalysis,
+	"GetTdxXDXRInfo":          GroupStockAnalysis,
+	"GetIndustryValuation":    GroupStockAnalysis,
+	"GetStockCallAuction":     GroupStockAnalysis,
+
 	"ListPromptTemplates":  GroupBase,
 	"GetPromptTemplate":    GroupBase,
 	"SavePromptTemplate":   GroupBase,
 	"DeletePromptTemplate": GroupBase,
+
+	// MCP 服务管理（读写 mcp_servers / mcp_server_tools）：归入运营组，
+	// 关键词补「mcp / 服务器」，避免这些工具对所有问题常驻可见。
+	"ListMCPServers":     GroupOperations,
+	"GetMCPServerDetail": GroupOperations,
+	"CreateMCPServer":    GroupOperations,
+	"UpdateMCPServer":    GroupOperations,
+	"DeleteMCPServer":    GroupOperations,
+	"EnableMCPServer":    GroupOperations,
+	"TestMCPServer":      GroupOperations,
+	"ListMCPServerTools": GroupOperations,
+	"GetMCPToolDetail":   GroupOperations,
+
+	// 币安 USDT-M 永续合约（加密资产/美股永续，24/7 交易）：单独成组，
+	// 仅当问题命中加密相关关键词时注入，避免与 A股/港股工具混用。
+	"GetBinanceFuturesMarket":      GroupCrypto,
+	"GetBinanceFuturesKLine":       GroupCrypto,
+	"GetBinanceFuturesDerivatives": GroupCrypto,
+	"GetBitgetFuturesMarket":       GroupCrypto,
+	"GetBitgetFuturesKLine":        GroupCrypto,
+	"GetBitgetFuturesDerivatives":  GroupCrypto,
 }
 
 type groupKeywords struct {
@@ -247,6 +305,7 @@ var groupKeywordsList = []groupKeywords{
 		"概念", "板块归属", "所属概念",
 		"业绩预告", "增发", "配股", "质押", "解禁", "调研", "监管函",
 		"基本资料", "上市日期", "基金资料", "费率", "合约信息",
+		"公司资料", "公司简介", "所属板块", "分红", "送转", "除权", "除息",
 		"主营业务", "主要客户", "供应商", "参控股", "股权投资", "重大合同",
 		"基金业绩", "基金持仓", "基金风险", "基金评级", "基金获奖",
 		"业绩点评", "财报分析", "业绩报告", "营收分析", "利润分析", "季报", "年报", "中报",
@@ -332,12 +391,20 @@ var groupKeywordsList = []groupKeywords{
 	{GroupOperations, []string{
 		"预警", "价位", "开仓", "止盈价", "止损价", "成本价",
 		"钉钉", "飞书", "QQ", "通知", "推送", "发送消息",
+		"mcp", "服务器", "工具列表", "工具详情",
 		"基金", "基金代码", "基金名称", "净值",
 		"GDP", "CPI", "PPI", "PMI", "宏观经济",
 		"关注", "自选", "加自选", "加入分组", "设置概念", "概念标签", "归类", "持仓", "持仓量",
 		"交易日志", "交易记录", "盈亏",
 		"操作计划", "每日计划", "操作方案", "明日操作", "明天操作", "盘中预警",
 		"生成图片", "转成图片", "转为图片", "导出图片", "保存为图片", "图片形式", "长图", "渲染图片", "markdown转图片",
+	}},
+	{GroupCrypto, []string{
+		"币安", "币安合约", "币安永续", "永续", "永续合约", "合约行情",
+		"USDT", "USDC", "加密货币", "数字货币", "加密资产", "加密",
+		"比特币", "以太坊", "狗狗币", "瑞波币", "山寨币", "主流币",
+		"BTC", "ETH", "SOL", "BNB", "DOGE", "Bitget",
+		"美股永续", "美股合约", "资金费率", "未平仓", "多空比", "bn:", "bt:",
 	}},
 }
 
@@ -369,6 +436,12 @@ func ClassifyQuestion(question string) map[ToolGroup]bool {
 func FilterToolsByGroups(allTools []tool.BaseTool, groups map[ToolGroup]bool) []tool.BaseTool {
 	var filtered []tool.BaseTool
 	for _, t := range allTools {
+		// 外部 MCP 工具属 ToolSearch 动态检索池，不参与静态分组裁剪：
+		// 否则一旦其名称与内置工具重名，会被当作内置工具按分组剔除。
+		if IsDynamicTool(t) {
+			filtered = append(filtered, t)
+			continue
+		}
 		info, err := t.Info(nil)
 		if err != nil {
 			filtered = append(filtered, t)
@@ -380,4 +453,31 @@ func FilterToolsByGroups(allTools []tool.BaseTool, groups map[ToolGroup]bool) []
 		}
 	}
 	return filtered
+}
+
+// alwaysVisibleTools 有意不参与分组裁剪的工具（key=工具名，value=原因）。
+//
+// 这些工具跨领域，任何问题都可能用到：知识库/长期记忆随时可能被引用，用户画像
+// 决定个性化回答口径。一旦按问题裁剪，会出现「用户明确问知识库却检索不到」的
+// 体验回退，故保持常驻（代价是每轮固定占用少量 schema token）。
+// 新增工具默认应显式分组；确需常驻则在此登记并写明原因。
+var alwaysVisibleTools = map[string]string{
+	"SearchKnowledgeBase":  "知识库检索可能被任何问题引用",
+	"ListKnowledgeBases":   "需要先列出知识库再决定检索哪一个",
+	"SearchAllKnowledge":   "跨全部知识源与长期记忆的统一检索入口",
+	"SearchLongTermMemory": "长期记忆可能被任何问题引用",
+	"GetUserProfile":       "个性化回答需读取用户偏好画像",
+	"UpdateUserProfile":    "对话中可能随时更新用户偏好画像",
+}
+
+// IsToolGrouped 判断工具是否已被显式纳入分组体系（分组裁剪或常驻白名单）。
+//
+// FilterToolsByGroups 对未登记工具一律保留（向后兼容），因此「忘记登记」不会报错，
+// 只会让该工具对所有问题常驻可见。装配层与守护测试用本函数把这种静默失效暴露出来。
+func IsToolGrouped(name string) bool {
+	if _, ok := toolGroupMap[name]; ok {
+		return true
+	}
+	_, ok := alwaysVisibleTools[name]
+	return ok
 }

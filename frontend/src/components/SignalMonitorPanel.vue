@@ -5,16 +5,17 @@
  * 引擎（kline/signalMonitor.ts）跟随应用生命周期常驻；本组件只负责交互与展示，
  * 抽屉常驻渲染（与 AI 助手抽屉同款做法），关闭态仅隐藏不销毁，避免重开时重建 DOM。
  */
-import { computed, nextTick, onBeforeMount, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeMount, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   NButton, NCard, NCheckbox, NCheckboxGroup, NDatePicker, NEmpty, NFlex, NIcon, NInput, NModal,
   NPagination, NPopconfirm, NScrollbar, NSelect, NSwitch, NTag, NText, NTooltip, useMessage,
 } from 'naive-ui'
 import { CloseOutline, PulseOutline, StatsChartOutline } from '@vicons/ionicons5'
-import { GetStockList, GetConfig } from '../../wailsjs/go/main/App'
+import { GetStockList, GetConfig, GetBinanceFuturesSymbols, GetBitgetFuturesSymbols } from '../../wailsjs/go/main/App'
 import StockLightweightKlineChart from './StockLightweightKlineChart.vue'
 import { BUY_SELL_SCORE_OPTIONS } from './kline/constants'
 import { alertSpeechAvailable, primeAlertSpeech, speakAlertText } from './kline/alertSound'
+import { KLINE_MODAL_CONTENT_STYLE, KLINE_MODAL_STYLE, useKlineModalFit } from './kline/useKlineModalFit'
 import {
   SIGNAL_CHANNEL_OPTIONS, SIGNAL_FAMILY_OPTIONS, SIGNAL_INTERVAL_OPTIONS, SIGNAL_POOL_LIMIT, SIGNAL_PAGE_SIZE_OPTIONS,
   SIGNAL_STATS_PRESETS, addPoolEntry, canUseSignalMonitor, clearPool, clearSignals, entryKlts, formatSignalTime,
@@ -27,6 +28,8 @@ const visible = ref(false)
 const pickCode = ref(null)
 /** 选股候选：与「关注」一致，来自全市场（A股/指数/港美股/场内基金），不限于自选股 */
 const stockOptions = ref([])
+/** 永续合约候选（bn:=币安 bn:、bt:=Bitget）：仅用于搜索时并入候选，不预先铺开下拉 */
+const contractOptions = ref([])
 let stockSearchTimer = null
 let stockSearchSeq = 0
 const STOCK_SEARCH_LIMIT = 20
@@ -41,59 +44,20 @@ const klineCode = ref('')
 const klineName = ref('')
 const darkTheme = ref(false)
 
-/** 应用窗口高度：K 线弹窗的图表高度按它自适应 */
-const winHeight = ref(typeof window !== 'undefined' ? window.innerHeight : 800)
-
-/**
- * K 线图表高度。组件内除图表外还有工具条/图例/提示行等固定开销（且会随数据加载变化），
- * 用固定值估算必然对不上——算小了留白、算大了弹窗出现滚动条。
- * 这里按「实测卡片高度」反推：卡片比预算高就缩、比预算矮就长，一次收敛到刚好铺满。
- */
-const KLINE_CARD_BUDGET_RATIO = 0.94
-const KLINE_MIN_CHART_PX = 320
-const klineChartHeight = ref(Math.max(420, winHeight.value - 230))
+// K 线弹窗尺寸与图表高度自适应：与全站其他 K 线弹窗共用同一套实现
 const klineWrapRef = ref(null)
-let klineResizeObserver = null
-
-function fitKlineChart() {
-  const el = klineWrapRef.value
-  const card = el && el.closest ? el.closest('.n-card') : null
-  if (!card) return
-  const budget = Math.round(winHeight.value * KLINE_CARD_BUDGET_RATIO)
-  const next = Math.max(KLINE_MIN_CHART_PX, klineChartHeight.value + (budget - card.offsetHeight))
-  // 4px 阈值：避免与 ResizeObserver 互相触发形成抖动
-  if (Math.abs(next - klineChartHeight.value) > 4) klineChartHeight.value = next
-}
-
-function onWinResize() {
-  winHeight.value = window.innerHeight
-  fitKlineChart()
-}
-
-// 弹窗打开后（内容已渲染）量一次并对后续尺寸变化保持跟随
-async function attachKlineFit(attempt = 0) {
-  await nextTick()
-  const el = klineWrapRef.value
-  // 模态内容是懒渲染的，偶发一帧内还拿不到元素，重试几帧即可
-  if (!el) {
-    if (attempt < 5) requestAnimationFrame(() => attachKlineFit(attempt + 1))
-    return
-  }
-  fitKlineChart()
-  if (typeof ResizeObserver === 'undefined') return
-  if (klineResizeObserver) klineResizeObserver.disconnect()
-  // 组件内的工具条/信号汇总会随数据加载变高，观测后再校正一次
-  klineResizeObserver = new ResizeObserver(() => fitKlineChart())
-  klineResizeObserver.observe(el)
-}
+const {
+  chartHeight: klineChartHeight,
+  attach: attachKlineFit,
+  detach: detachKlineFit,
+} = useKlineModalFit(klineWrapRef)
 
 watch(klineShow, (v) => {
   if (v) {
     attachKlineFit()
     return
   }
-  if (klineResizeObserver) klineResizeObserver.disconnect()
-  klineResizeObserver = null
+  detachKlineFit()
 })
 
 const state = signalMonitorState
@@ -292,9 +256,12 @@ async function scanNow() {
 function toChartCode(code) {
   const c = String(code || '').trim()
   if (!c) return ''
+  // 永续合约：非东财体系，按 bn:/bt: 前缀直通（交给行情组件识别）
+  const lower = c.toLowerCase()
+  if (lower.startsWith('bn:')) return `bn:${c.slice(3).toUpperCase()}`
+  if (lower.startsWith('bt:')) return `bt:${c.slice(3).toUpperCase()}`
   if (/\.(SH|SZ|BJ|HK|US|SS|CSI)$/i.test(c)) return c.toUpperCase()
   if (/^100\.[A-Za-z]+$/.test(c)) return c.toUpperCase()
-  const lower = c.toLowerCase()
   if (lower.startsWith('sh')) return `${lower.slice(2)}.SH`
   if (lower.startsWith('sz')) return `${lower.slice(2)}.SZ`
   if (lower.startsWith('bj')) return `${lower.slice(2)}.BJ`
@@ -347,9 +314,46 @@ function loadAllStocks() {
   }).catch(() => { /* 全量列表拉取失败不影响在线搜索 */ })
 }
 
+/** 预载永续合约清单（bn:/bt:），供监控池按名称/代码联想；失败不影响股票监控 */
+function loadContracts() {
+  Promise.all([GetBitgetFuturesSymbols(), GetBinanceFuturesSymbols()]).then(([bt, bn]) => {
+    const list = []
+    for (const s of bt || []) {
+      const sym = String(s.symbol || '').toUpperCase()
+      if (!sym) continue
+      const name = s.displayName || sym
+      list.push({ value: `bt:${sym}`, name, label: `${name} - bt:${sym}` })
+    }
+    for (const s of bn || []) {
+      const sym = String(s.symbol || '').toUpperCase()
+      if (!sym) continue
+      const name = s.displayName || sym
+      list.push({ value: `bn:${sym}`, name, label: `${name} - bn:${sym}` })
+    }
+    contractOptions.value = list
+  }).catch(() => { /* 合约清单拉取失败只影响合约联想 */ })
+}
+
+/** 合约联想：按 symbol 或展示名匹配关键字 */
+function matchContracts(keyword) {
+  const k = String(keyword || '').trim().toUpperCase()
+  if (!k) return []
+  const kStripped = k.replace(/^(BN:|BT:)/, '')
+  const out = []
+  for (const o of contractOptions.value) {
+    const code = String(o.value || '').toUpperCase()
+    if (code.includes(k) || code.slice(3).includes(kStripped) || String(o.name || '').toUpperCase().includes(k)) {
+      out.push(o)
+      if (out.length >= STOCK_SEARCH_LIMIT) break
+    }
+  }
+  return out
+}
+
 /**
  * 与「关注」一致的选股方式：直接搜全市场名称/代码（不限自选股），
  * 输入防抖 300ms 调后端模糊搜索，结果并入候选，避免每敲一个字就查一次库。
+ * 合约（bn:/bt:）为本地清单匹配，与股票结果一并展示。
  */
 function onSearchStock(keyword) {
   const k = String(keyword || '').trim()
@@ -361,10 +365,10 @@ function onSearchStock(keyword) {
   const seq = ++stockSearchSeq
   stockSearchTimer = setTimeout(() => {
     GetStockList(k).then((res) => {
-      if (seq !== stockSearchSeq || !res || !res.length) return
+      if (seq !== stockSearchSeq) return
       const existing = new Set(stockOptions.value.map((o) => o.value))
       const extra = []
-      for (const item of res) {
+      for (const item of res || []) {
         const opt = toStockOption(item)
         if (opt.value && !existing.has(opt.value)) {
           extra.push(opt)
@@ -372,8 +376,17 @@ function onSearchStock(keyword) {
         }
         if (extra.length >= STOCK_SEARCH_LIMIT) break
       }
+      for (const opt of matchContracts(k)) {
+        if (existing.has(opt.value)) continue
+        extra.push(opt)
+        existing.add(opt.value)
+      }
       if (extra.length) stockOptions.value = stockOptions.value.concat(extra)
-    }).catch(() => { /* 在线搜索失败不影响已有候选 */ })
+    }).catch(() => {
+      // 股票搜索失败时仍展示合约联想
+      const extra = matchContracts(k).filter((o) => !stockOptions.value.some((x) => x.value === o.value))
+      if (extra.length) stockOptions.value = stockOptions.value.concat(extra)
+    })
   }, 300)
 }
 
@@ -385,15 +398,12 @@ onBeforeMount(() => {
 })
 
 onMounted(() => {
-  window.addEventListener('resize', onWinResize)
   startSignalMonitor()
   loadAllStocks()
+  loadContracts()
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', onWinResize)
-  if (klineResizeObserver) klineResizeObserver.disconnect()
-  klineResizeObserver = null
   if (stockSearchTimer) clearTimeout(stockSearchTimer)
 })
 
@@ -478,7 +488,7 @@ watch(
                 :options="stockOptions"
                 filterable
                 clearable
-                placeholder="搜索全部股票（名称/代码）"
+                placeholder="搜索股票 / 永续合约（名称/代码）"
                 :z-index="10002"
                 style="flex: 1;"
                 @search="onSearchStock"
@@ -515,7 +525,7 @@ watch(
                 </NButton>
               </div>
             </div>
-            <NText v-else depth="3" style="font-size: 12px;">与自选股解耦，可搜索全市场股票（名称/代码）</NText>
+            <NText v-else depth="3" style="font-size: 12px;">与自选股解耦，可搜索全市场股票（名称/代码）与永续合约（bn:/bt:，如 BTC、苹果）</NText>
           </div>
 
           <div class="section">
@@ -755,12 +765,8 @@ watch(
     :title="`${klineName || klineCode} — K线`"
     preset="card"
     :z-index="10010"
-    style="width: 92vw; max-width: 92vw; box-sizing: border-box"
-    :content-style="{
-      overflow: 'hidden',
-      minWidth: 0,
-      boxSizing: 'border-box',
-    }"
+    :style="KLINE_MODAL_STYLE"
+    :content-style="KLINE_MODAL_CONTENT_STYLE"
   >
     <div ref="klineWrapRef">
       <StockLightweightKlineChart

@@ -49,6 +49,7 @@ typings/
 
 # Optional npm cache directory
 .npm
+.npm-cache/
 
 # Optional eslint cache
 .eslintcache
@@ -122,6 +123,7 @@ frontend/package.json.md5
 .gopath/
 .go-appdata/
 .gotelemetry/
+.test-runtime/
 
 # Local agent/tool state
 .codex/

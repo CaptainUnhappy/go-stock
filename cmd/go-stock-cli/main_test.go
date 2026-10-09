@@ -2,6 +2,22 @@ package main
 
 import "testing"
 
+func TestCommandNeedsRuntimeSkipsMetadataOnlyCommands(t *testing.T) {
+	for _, command := range []string{"", "help"} {
+		if commandNeedsRuntime(command) {
+			t.Fatalf("commandNeedsRuntime(%q) = true, want false", command)
+		}
+	}
+}
+
+func TestCommandNeedsRuntimeKeepsDataCommandsInitialized(t *testing.T) {
+	for _, command := range []string{"portfolio list", "calendar now", "tool list", "tool info", "tool GetStockInfo"} {
+		if !commandNeedsRuntime(command) {
+			t.Fatalf("commandNeedsRuntime(%q) = false, want true", command)
+		}
+	}
+}
+
 func TestParseArgsNormalizesCommaStockCodeList(t *testing.T) {
 	req, _, err := parseArgs([]string{"tool", "GetStockLatestFinance", "--stock-code", "sz002335,sz002506,sh603690"})
 	if err != nil {
